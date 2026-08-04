@@ -74,7 +74,7 @@ function quotaTitle(quota: CodexQuota | null, error: string) {
 function QuotaBadge({ quota, loading, error }: { quota: CodexQuota | null; loading: boolean; error: string }) {
   const available = quota?.available && quota.primary;
   return <div className={`quota-badge${available ? "" : " quota-unavailable"}`} title={quotaTitle(quota, error)} aria-live="polite">
-    {available ? <><span className="quota-amount"><strong>{quota.primary?.remainingPercent ?? "--"}%</strong><small>{quotaWindowLabel(quota.primary)}</small></span><i/><span className="quota-reset">{resetTimeLabel(quota.primary?.resetsAt)}</span></> : <span className="quota-placeholder">{loading ? "额度读取中…" : "额度暂不可用"}</span>}
+    {available ? <><span className="quota-amount"><small>{quotaWindowLabel(quota.primary)}</small><strong>{quota.primary?.remainingPercent ?? "--"}%</strong></span><i/><span className="quota-reset">{resetTimeLabel(quota.primary?.resetsAt)}</span></> : <span className="quota-placeholder">{loading ? "额度读取中…" : "额度暂不可用"}</span>}
   </div>;
 }
 
