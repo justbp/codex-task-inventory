@@ -99,7 +99,7 @@ export class CodexMonitor {
     const db = new DatabaseSync(this.statePath, { readOnly: true });
     try {
       const rows = db.prepare(`
-        SELECT id, title, preview, cwd, source, rollout_path, created_at, updated_at, archived, is_pinned
+        SELECT id, name, title, preview, cwd, source, rollout_path, created_at, updated_at, archived, is_pinned
         FROM threads
         WHERE source IN ('vscode', 'cli') ${includeArchived ? "" : "AND archived = 0"}
         ORDER BY updated_at DESC
@@ -107,7 +107,7 @@ export class CodexMonitor {
       `).all(Math.max(1, Math.min(Number(limit) || 200, 500)));
       return rows.map((row) => ({
         id: row.id,
-        title: compact(row.title, 160) || "未命名 Codex 任务",
+        title: compact(row.name || row.title, 160) || "未命名 Codex 任务",
         preview: compact(row.preview),
         cwd: row.cwd,
         project: basename(row.cwd || "") || "未归项目",

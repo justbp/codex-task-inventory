@@ -272,7 +272,7 @@ export function createTaskServer(options = {}) {
   const publishIfChanged = () => {
     try {
       const threads = [...manual.list(), ...createSnapshot(monitor, metadata)];
-      const signature = JSON.stringify(threads.map((item) => [item.id, item.updatedAt, item.runtimeStatus, item.lastProgressAt, item.lane, item.pinned, item.hidden]));
+      const signature = JSON.stringify(threads.map((item) => [item.id, item.title, item.updatedAt, item.runtimeStatus, item.lastProgressAt, item.lane, item.pinned, item.hidden]));
       if (signature === lastSignature) return;
       lastSignature = signature;
       const payload = `event: threads-changed\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`;
@@ -321,7 +321,21 @@ export function createTaskServer(options = {}) {
       const match = url.pathname.match(/^\/api\/threads\/([0-9a-f-]+)$/i);
       if (match && req.method === "PATCH") {
         const thread = monitor.list().find((item) => item.id === match[1]);
-        return json(res, 200, { metadata: metadata.patch(match[1], await parseBody(req), { lastCompletedAt: thread?.lastCompletedAt || null, lastInterruptedAt: thread?.lastInterruptedAt || null }) });
+        if (!thread) throw new ApiError(404, "Codex 任务不存在或尚未同步");
+        const body = await parseBody(req);
+        if (!body || typeof body !== "object" || Array.isArray(body)) throw new ApiError(400, "请求内容必须是对象");
+        const { title, ...metadataChange } = body;
+        let renamed = null;
+        if (title !== undefined) {
+          const name = String(title).trim().slice(0, 300);
+          if (!name) throw new ApiError(400, "对话名称不能为空");
+          renamed = await launcher.rename({ threadId: match[1], name });
+        }
+        const currentMetadata = Object.keys(metadataChange).length
+          ? metadata.patch(match[1], metadataChange, { lastCompletedAt: thread.lastCompletedAt || null, lastInterruptedAt: thread.lastInterruptedAt || null })
+          : metadata.get(match[1]);
+        publishIfChanged();
+        return json(res, 200, { metadata: currentMetadata, renamed });
       }
       if (url.pathname.startsWith("/api/")) throw new ApiError(404, "API 不存在");
       if (!serveStatic(req, res, distDir, url.pathname)) throw new ApiError(404, "文件不存在");

@@ -18,6 +18,7 @@ const sample = {
 };
 const monitoredThreads = [sample];
 const launches = [];
+const renames = [];
 const quotaReads = [];
 const monitor = { list: () => monitoredThreads };
 const quotaReader = {
@@ -31,6 +32,12 @@ const quotaReader = {
   },
 };
 const launcher = {
+  async rename(input) {
+    renames.push(input);
+    const thread = monitoredThreads.find((item) => item.id === input.threadId);
+    if (thread) thread.title = input.name;
+    return input;
+  },
   async launch(input) {
     launches.push(input);
     const id = "019fc79b-3541-7853-a09a-6bcd9ced9999";
@@ -60,6 +67,7 @@ after(async () => { await new Promise((resolve) => server.close(resolve)); rmSyn
 test("serves the monitor and reports a no-token local source", async () => {
   assert.equal((await fetch(`${baseUrl}/`)).status, 200);
   assert.equal((await fetch(`${baseUrl}/completed`)).status, 200);
+  assert.equal((await fetch(`${baseUrl}/favorites`)).status, 200);
   assert.deepEqual(await (await fetch(`${baseUrl}/api/health`)).json(), { ok: true, source: "codex-local-state", tokenUsage: false });
 });
 
@@ -83,6 +91,27 @@ test("uses Codex runtime state as the authoritative in-progress lane", async () 
   const after = await (await fetch(`${baseUrl}/api/threads`)).json();
   assert.equal(after.threads[0].lane, "in_progress", "active Codex runtime must override manual layout");
   assert.deepEqual(after.threads[0].tags, ["monitor"]);
+});
+
+test("renames the real Codex thread through App Server", async () => {
+  const response = await fetch(`${baseUrl}/api/threads/${sample.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "FBA 信息缺失原因" }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).renamed, { threadId: sample.id, name: "FBA 信息缺失原因" });
+  assert.deepEqual(renames.at(-1), { threadId: sample.id, name: "FBA 信息缺失原因" });
+  const listed = await (await fetch(`${baseUrl}/api/threads`)).json();
+  assert.equal(listed.threads.find((item) => item.id === sample.id).title, "FBA 信息缺失原因");
+
+  const invalid = await fetch(`${baseUrl}/api/threads/${sample.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "   " }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.match((await invalid.json()).error, /不能为空/);
 });
 
 test("keeps the deprecated task endpoint unavailable", async () => {

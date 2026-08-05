@@ -8,7 +8,7 @@ const COLUMNS: { id: TaskLane; title: string; subtitle: string }[] = [
   { id: "review", title: "待 Review", subtitle: "新一轮执行已经结束" },
 ];
 
-type IconName = "logo" | "search" | "refresh" | "open" | "folder" | "pulse" | "close" | "check" | "plus" | "play" | "pin" | "star" | "trash";
+type IconName = "logo" | "search" | "refresh" | "open" | "folder" | "pulse" | "close" | "check" | "plus" | "play" | "pin" | "star" | "trash" | "edit";
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactNode> = {
     logo: <><rect x="3" y="3" width="18" height="18" rx="6"/><path d="M8 12h8M12 8v8"/></>,
@@ -24,6 +24,7 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     pin: <><path d="m15 4 5 5-3 1-4 4v5l-2 2-2-6-6-2 2-2h5l4-4z"/><path d="m5 19 4-4"/></>,
     star: <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/>,
     trash: <><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/><path d="M10 11v5M14 11v5"/></>,
+    edit: <><path d="M4 20h4l11-11-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>{paths[name]}</svg>;
 }
@@ -107,6 +108,8 @@ function pinnedFirst(items: CodexThread[]) {
 
 export default function TaskWorkspace() {
   const completedPage = window.location.pathname === "/completed";
+  const favoritesPage = window.location.pathname === "/favorites";
+  const listPage = completedPage || favoritesPage;
   const [threads, setThreads] = useState<CodexThread[]>([]);
   const [loading, setLoading] = useState(true);
   const [quota, setQuota] = useState<CodexQuota | null>(null);
@@ -155,6 +158,8 @@ export default function TaskWorkspace() {
   }), [threads, query, project]);
   const byLane = useMemo(() => Object.fromEntries(COLUMNS.map((column) => [column.id, pinnedFirst(filtered.filter((item) => item.lane === column.id))])) as Record<TaskLane, CodexThread[]>, [filtered]);
   const completed = useMemo(() => pinnedFirst(filtered.filter((item) => item.lane === "completed" && inDoneRange(item, doneRange))), [filtered, doneRange]);
+  const favorites = useMemo(() => pinnedFirst(filtered.filter((item) => item.lane === "completed" && item.pinned)), [filtered]);
+  const listItems = favoritesPage ? favorites : completed;
 
   async function patch(id: string, change: Record<string, unknown>) {
     const item = threads.find((thread) => thread.id === id);
@@ -186,25 +191,24 @@ export default function TaskWorkspace() {
   const waitingCount = threads.filter((item) => item.runtimeStatus === "waiting").length;
   return <main className="workspace-shell">
     <header className="topbar">
-      <div className="brand-area"><div className="brand"><span className="brand-mark"><Icon name="logo" size={21}/></span><div><strong>Codex Task Monitor</strong><span>本地任务盘点</span></div></div><QuotaBadge quota={quota} loading={quotaLoading} error={quotaError}/></div>
+      <div className="brand-area"><div className="brand"><span className="brand-mark"><img src="/app-icon-192.png" alt=""/></span><div><strong>Codex Task Monitor</strong><span>本地任务盘点</span></div></div><QuotaBadge quota={quota} loading={quotaLoading} error={quotaError}/></div>
       <label className="search-box"><Icon name="search"/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对话、项目或路径"/></label>
       <div className="top-actions"><button className="icon-button" onClick={() => void Promise.all([load(), loadQuota(true)])} title="刷新任务和额度"><Icon name="refresh"/></button></div>
     </header>
     <section className="page-heading">
-      <nav className="page-tabs" aria-label="任务页面"><a className={!completedPage ? "active" : ""} href="/">任务看板</a><a className={completedPage ? "active" : ""} href="/completed">已完成 <b>{threads.filter((item) => item.lane === "completed").length}</b></a></nav>
+      <nav className="page-tabs" aria-label="任务页面"><a className={!listPage ? "active" : ""} href="/">任务看板</a><a className={completedPage ? "active" : ""} href="/completed">已完成 <b>{threads.filter((item) => item.lane === "completed").length}</b></a><a className={favoritesPage ? "active" : ""} href="/favorites">收藏 <b>{threads.filter((item) => item.lane === "completed" && item.pinned).length}</b></a></nav>
       <div className="summary-strip"><div><span>任务</span><strong>{threads.length}</strong></div><i/><div><span>执行中</span><strong>{activeCount}</strong></div><i/><div><span>等待我</span><strong>{waitingCount}</strong></div><i/><div><span>待检查</span><strong>{threads.filter((item) => item.lane === "review").length}</strong></div></div>
     </section>
-    <section className="filterbar"><span className="source-pill"><i/>实时读取本机 Codex</span><select value={project} onChange={(event) => setProject(event.target.value)}><option value="all">全部项目</option>{projects.map((item) => <option key={item}>{item}</option>)}</select><span className="task-total">共 {completedPage ? completed.length : filtered.filter((item) => item.lane !== "completed").length} 个任务</span></section>
+    <section className={`filterbar${completedPage ? " with-date-filter" : ""}`}><span className="source-pill"><i/>实时读取本机 Codex</span><select value={project} onChange={(event) => setProject(event.target.value)}><option value="all">全部项目</option>{projects.map((item) => <option key={item}>{item}</option>)}</select>{completedPage && <div className="date-segment">{[["today","今天"],["week","本周"],["month","本月"],["all","全部"]].map(([value,label]) => <button className={doneRange === value ? "active" : ""} onClick={() => setDoneRange(value)} key={value}>{label}</button>)}</div>}<span className="task-total">共 {listPage ? listItems.length : filtered.filter((item) => item.lane !== "completed").length} 个任务</span></section>
     {error && <div className="error-banner">{error}<button onClick={() => void load()}>重试</button></div>}
-    {!completedPage ? <section className="board">
+    {!listPage ? <section className="board">
       {COLUMNS.map((column) => <section className={`board-column column-${column.id}`} key={column.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/thread-id") || dragging; if (id && !["in_progress"].includes(column.id)) void patch(id, { lane: column.id }); setDragging(null); }}>
         <header className="column-header"><div><span className="status-dot"/><h2>{column.title}</h2><b>{byLane[column.id].length}</b></div>{["inbox", "upcoming"].includes(column.id) && <button className="column-create" onClick={() => setCreateLane(column.id as "inbox" | "upcoming")}><Icon name="plus" size={14}/>创建</button>}</header><p className="column-subtitle">{column.subtitle}</p>
         {column.id === "review" && byLane.review.length > 0 && <div className="review-toolbar"><button onClick={() => setReviewSelection(new Set(byLane.review.map((item) => item.id)))}>全选</button><span>{reviewSelection.size ? `已选 ${reviewSelection.size}` : "批量验收"}</span><button disabled={!reviewSelection.size} className="approve-selected" onClick={() => void batchReview("completed")}><Icon name="check" size={13}/>通过</button></div>}
-        <div className="card-list">{loading ? <Loading/> : byLane[column.id].length ? <>{byLane[column.id].slice(0, visibleCounts[column.id]).map((thread) => <ThreadCard thread={thread} key={thread.id} onOpen={() => setSelected(thread)} onTogglePinned={() => void patch(thread.id, { pinned: !thread.pinned })} onDelete={thread.kind === "manual" && ["inbox", "upcoming"].includes(thread.lane) ? () => void removeManual(thread) : undefined} actionLabel="置顶" selectable={column.id === "review"} selected={reviewSelection.has(thread.id)} onSelect={(checked) => setReviewSelection((current) => { const next = new Set(current); checked ? next.add(thread.id) : next.delete(thread.id); return next; })} onDragStart={(event) => { setDragging(thread.id); event.dataTransfer.setData("text/thread-id", thread.id); }}/>) }{byLane[column.id].length > visibleCounts[column.id] && <button className="load-more" onClick={() => setVisibleCounts((counts) => ({ ...counts, [column.id]: counts[column.id] + 20 }))}>再显示 20 个 · 剩余 {byLane[column.id].length - visibleCounts[column.id]}</button>}</> : <div className="empty-column"><span>—</span><strong>暂无任务</strong><p>{column.id === "in_progress" ? "Codex 开始执行后会自动出现" : ["inbox", "upcoming"].includes(column.id) ? "点击列标题旁的创建按钮" : "拖入任务即可排布"}</p></div>}</div>
+        <div className="card-list">{loading ? <Loading/> : byLane[column.id].length ? <>{byLane[column.id].slice(0, visibleCounts[column.id]).map((thread) => <ThreadCard thread={thread} key={thread.id} onOpen={() => setSelected(thread)} onRename={(title) => patch(thread.id, { title })} onTogglePinned={() => void patch(thread.id, { pinned: !thread.pinned })} onDelete={thread.kind === "manual" && ["inbox", "upcoming"].includes(thread.lane) ? () => void removeManual(thread) : undefined} onApprove={column.id === "review" ? () => void patch(thread.id, { lane: "completed" }) : undefined} actionLabel="置顶" selectable={column.id === "review"} selected={reviewSelection.has(thread.id)} onSelect={(checked) => setReviewSelection((current) => { const next = new Set(current); checked ? next.add(thread.id) : next.delete(thread.id); return next; })} onDragStart={(event) => { setDragging(thread.id); event.dataTransfer.setData("text/thread-id", thread.id); }}/>) }{byLane[column.id].length > visibleCounts[column.id] && <button className="load-more" onClick={() => setVisibleCounts((counts) => ({ ...counts, [column.id]: counts[column.id] + 20 }))}>再显示 20 个 · 剩余 {byLane[column.id].length - visibleCounts[column.id]}</button>}</> : <div className="empty-column"><span>—</span><strong>暂无任务</strong><p>{column.id === "in_progress" ? "Codex 开始执行后会自动出现" : ["inbox", "upcoming"].includes(column.id) ? "点击列标题旁的创建按钮" : "拖入任务即可排布"}</p></div>}</div>
       </section>)}
     </section> : <section className="completed-page">
-      <header className="completed-header"><div><h1>已完成</h1><p>集中查看已验收或已归档的任务</p></div><div className="date-segment">{[["today","今天"],["week","本周"],["month","本月"],["all","全部"]].map(([value,label]) => <button className={doneRange === value ? "active" : ""} onClick={() => setDoneRange(value)} key={value}>{label}</button>)}</div></header>
-      <div className="completed-grid">{loading ? <Loading/> : completed.length ? completed.map((thread) => <ThreadCard thread={thread} key={thread.id} onOpen={() => setSelected(thread)} onTogglePinned={() => void patch(thread.id, { pinned: !thread.pinned })} actionLabel="收藏" selectable={false} selected={false} onSelect={() => {}} onDragStart={(event) => event.preventDefault()}/>) : <div className="completed-empty"><span>✓</span><strong>这个时间范围内没有已完成任务</strong><p>完成的任务会集中出现在这里。</p></div>}</div>
+      <div className="completed-grid">{loading ? <Loading/> : listItems.length ? listItems.map((thread) => <ThreadCard thread={thread} key={thread.id} onOpen={() => setSelected(thread)} onRename={(title) => patch(thread.id, { title })} onTogglePinned={() => void patch(thread.id, { pinned: !thread.pinned })} actionLabel="收藏" selectable={false} selected={false} onSelect={() => {}} onDragStart={(event) => event.preventDefault()}/>) : <div className="completed-empty"><span>{favoritesPage ? "★" : "✓"}</span><strong>{favoritesPage ? "还没有收藏任务" : "这个时间范围内没有已完成任务"}</strong><p>{favoritesPage ? "在已完成页面点击星标即可收藏。" : "完成的任务会集中出现在这里。"}</p></div>}</div>
     </section>}
     {selected && <ThreadDrawer thread={selected} projectChoices={projectChoices} onClose={() => setSelected(null)} onPatch={(change) => patch(selected.id, change)} onStart={() => startManual(selected.id)} onDelete={() => removeManual(selected)}/>}
     {createLane && <CreateTaskModal initialLane={createLane} projectChoices={projectChoices} onClose={() => setCreateLane(null)} onCreated={async () => { setCreateLane(null); await load(true); }}/>}
@@ -213,13 +217,28 @@ export default function TaskWorkspace() {
 
 function Loading() { return <>{[1,2].map((item) => <div className="card-skeleton" key={item}><i/><b/><span/></div>)}</>; }
 
-function ThreadCard({ thread, onOpen, onDragStart, onTogglePinned, onDelete, actionLabel, selectable, selected, onSelect }: { thread: CodexThread; onOpen: () => void; onDragStart: React.DragEventHandler<HTMLElement>; onTogglePinned: () => void; onDelete?: () => void; actionLabel: "置顶" | "收藏"; selectable: boolean; selected: boolean; onSelect: (checked: boolean) => void }) {
+function ThreadCard({ thread, onOpen, onRename, onDragStart, onTogglePinned, onDelete, onApprove, actionLabel, selectable, selected, onSelect }: { thread: CodexThread; onOpen: () => void; onRename: (title: string) => Promise<void>; onDragStart: React.DragEventHandler<HTMLElement>; onTogglePinned: () => void; onDelete?: () => void; onApprove?: () => void; actionLabel: "置顶" | "收藏"; selectable: boolean; selected: boolean; onSelect: (checked: boolean) => void }) {
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [title, setTitle] = useState(thread.title);
+  const [renaming, setRenaming] = useState(false);
+  const [renameError, setRenameError] = useState("");
   const runtime = thread.kind === "manual" ? "待处理" : thread.runtimeStatus === "active" ? "执行中" : thread.runtimeStatus === "waiting" ? "等待我" : thread.runtimeStatus === "interrupted" ? "已中断" : "已执行";
+  async function rename(event: FormEvent) {
+    event.preventDefault(); event.stopPropagation();
+    const next = title.trim();
+    if (!next) return setRenameError("名称不能为空");
+    if (next === thread.title) { setEditingTitle(false); return; }
+    setRenaming(true); setRenameError("");
+    try { await onRename(next); setEditingTitle(false); }
+    catch (reason) { setRenameError(reason instanceof Error ? reason.message : "重命名失败"); }
+    finally { setRenaming(false); }
+  }
   return <article className={`task-card${thread.pinned ? " is-pinned" : ""}`} draggable={thread.runtimeStatus !== "active" && thread.runtimeStatus !== "waiting"} onDragStart={onDragStart} onClick={onOpen}>
     <div className="card-topline"><span className="project-name"><Icon name="folder" size={13}/>{thread.project}</span><div className="card-quick-actions"><button className={thread.pinned ? "active" : ""} onClick={(event) => { event.stopPropagation(); onTogglePinned(); }} title={thread.pinned ? `取消${actionLabel}` : actionLabel} aria-label={thread.pinned ? `取消${actionLabel}` : actionLabel}><Icon name={actionLabel === "收藏" ? "star" : "pin"} size={14}/></button>{onDelete && <button className="delete-action" onClick={(event) => { event.stopPropagation(); onDelete(); }} title="删除" aria-label="删除"><Icon name="trash" size={14}/></button>}</div></div>
     <span className={`runtime runtime-${thread.kind === "manual" ? "manual" : thread.runtimeStatus}`}><i/>{runtime}</span>
-    {selectable && <label className="review-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)}/><span>选择验收</span></label>}
-    <h3>{thread.title}</h3>
+    {selectable && <div className="review-card-actions" onClick={(event) => event.stopPropagation()}><label className="review-check"><input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)}/><span>选择验收</span></label>{onApprove && <button className="review-approve" onClick={onApprove}><Icon name="check" size={12}/>通过</button>}</div>}
+    {editingTitle ? <form className="card-title-editor" onSubmit={(event) => void rename(event)} onClick={(event) => event.stopPropagation()} onDragStart={(event) => event.preventDefault()}><input autoFocus value={title} maxLength={300} disabled={renaming} onChange={(event) => setTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setTitle(thread.title); setRenameError(""); setEditingTitle(false); } }}/><button disabled={renaming} title="保存名称" aria-label="保存名称"><Icon name="check" size={14}/></button><button type="button" disabled={renaming} onClick={() => { setTitle(thread.title); setRenameError(""); setEditingTitle(false); }} title="取消" aria-label="取消"><Icon name="close" size={14}/></button></form> : <div className="card-title-row"><h3>{thread.title}</h3><button onClick={(event) => { event.stopPropagation(); setTitle(thread.title); setEditingTitle(true); }} title="修改对话名称" aria-label="修改对话名称"><Icon name="edit" size={13}/></button></div>}
+    {renameError && <p className="card-title-error">{renameError}</p>}
     <p className="task-description">{thread.lastProgress || thread.preview || "尚无进展摘要"}</p>
     {thread.tags.length > 0 && <div className="tag-row">{thread.tags.slice(0,3).map((tag) => <span key={tag}>#{tag}</span>)}</div>}
     <footer className="card-footer"><span><Icon name="pulse" size={14}/>{relativeTime(thread.lastProgressAt || thread.updatedAt)}</span>{thread.deepLink && <a href={thread.deepLink} onClick={(event) => event.stopPropagation()} title="回到 Codex 对话"><Icon name="open" size={15}/></a>}</footer>
@@ -242,6 +261,7 @@ function DirectoryInput({ id, value, project, choices, onChange, hint }: { id: s
 }
 
 function ThreadDrawer({ thread, projectChoices, onClose, onPatch, onStart, onDelete }: { thread: CodexThread; projectChoices: ProjectChoice[]; onClose: () => void; onPatch: (change: Record<string, unknown>) => Promise<void>; onStart: () => Promise<string>; onDelete: () => Promise<void> }) {
+  const [title, setTitle] = useState(thread.title);
   const [project, setProject] = useState(thread.project);
   const [cwd, setCwd] = useState(thread.cwd);
   const [tags, setTags] = useState(thread.tags.join(", "));
@@ -250,11 +270,12 @@ function ThreadDrawer({ thread, projectChoices, onClose, onPatch, onStart, onDel
   const [saving, setSaving] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [actionError, setActionError] = useState("");
-  async function save() { setSaving(true); try { await onPatch({ project, cwd, tags: tags.split(",").map((item) => item.trim()).filter(Boolean), priority, note }); setActionError(""); } finally { setSaving(false); } }
+  const changes = () => ({ title, project, tags: tags.split(",").map((item) => item.trim()).filter(Boolean), priority, note, ...(thread.kind === "manual" ? { cwd } : {}) });
+  async function save() { setSaving(true); try { await onPatch(changes()); setActionError(""); } catch (reason) { setActionError(reason instanceof Error ? reason.message : "保存失败"); } finally { setSaving(false); } }
   async function launch() {
     setLaunching(true); setActionError("");
     try {
-      await onPatch({ project, cwd, tags: tags.split(",").map((item) => item.trim()).filter(Boolean), priority, note });
+      await onPatch(changes());
       const deepLink = await onStart();
       window.location.href = deepLink;
     } catch (reason) { setActionError(reason instanceof Error ? reason.message : "无法启动 Codex"); }
@@ -263,6 +284,7 @@ function ThreadDrawer({ thread, projectChoices, onClose, onPatch, onStart, onDel
   return <><div className="drawer-scrim" onClick={onClose}/><aside className="task-drawer">
     <header className="drawer-header"><span className={`runtime runtime-${thread.kind === "manual" ? "manual" : thread.runtimeStatus}`}><i/>{thread.kind === "manual" ? "我的待办" : thread.runtimeStatus === "active" ? "Codex 正在执行" : thread.runtimeStatus === "waiting" ? "等待你的操作" : "Codex 任务"}</span><button className="icon-button" onClick={onClose}><Icon name="close"/></button></header>
     <div className="drawer-content"><p className="drawer-kicker">{thread.kind === "manual" ? "尚未发送给 Codex" : "真实 Codex 对话"}</p><h2>{thread.title}</h2><p className="drawer-preview">{thread.lastProgress || thread.preview || "尚未填写说明"}</p>
+      <label className="field"><span>{thread.kind === "manual" ? "待办名称" : "对话名称"}</span><input value={title} maxLength={300} onChange={(event) => setTitle(event.target.value)}/></label>
       {thread.kind === "codex" && <dl className="thread-facts"><div><dt>工作目录</dt><dd>{thread.cwd}</dd></div><div><dt>最近更新</dt><dd>{relativeTime(thread.updatedAt)}</dd></div><div><dt>最近文件变更</dt><dd>{relativeTime(thread.lastFileChangeAt)}</dd></div></dl>}
       <ProjectInput id={`drawer-${thread.id}`} value={project} choices={projectChoices} onChange={setProject} onDirectorySuggested={thread.kind === "manual" ? setCwd : undefined}/>
       {thread.kind === "manual" && <DirectoryInput id={`drawer-${thread.id}`} value={cwd} project={project} choices={projectChoices} onChange={setCwd} hint="必填，可选择或输入"/>}

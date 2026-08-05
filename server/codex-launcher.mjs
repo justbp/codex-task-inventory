@@ -18,6 +18,74 @@ export class CodexLauncher {
     this.children = new Set();
   }
 
+  async requestOnce(method, params = {}) {
+    const child = spawn(this.command, ["app-server", "--listen", "stdio://"], {
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    this.children.add(child);
+    child.stdin.on("error", () => { /* request/exit handlers report the useful failure */ });
+
+    let nextId = 1;
+    let stderr = "";
+    const pending = new Map();
+    const lines = readline.createInterface({ input: child.stdout });
+    const stop = () => {
+      lines.close();
+      if (!child.killed) child.kill();
+      this.children.delete(child);
+    };
+    const rejectPending = (error) => {
+      for (const entry of pending.values()) {
+        clearTimeout(entry.timer);
+        entry.reject(error);
+      }
+      pending.clear();
+    };
+    const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
+    const request = (requestMethod, requestParams = {}) => new Promise((resolve, reject) => {
+      const id = nextId++;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(launchError(`Codex ${requestMethod} 超时`, stderr));
+      }, REQUEST_TIMEOUT_MS);
+      pending.set(id, { resolve, reject, timer });
+      send({ method: requestMethod, id, params: requestParams });
+    });
+
+    child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-8000); });
+    lines.on("line", (line) => {
+      let message;
+      try { message = JSON.parse(line); } catch { return; }
+      if (message.id === undefined || !pending.has(message.id)) return;
+      const entry = pending.get(message.id);
+      pending.delete(message.id);
+      clearTimeout(entry.timer);
+      if (message.error) entry.reject(launchError(message.error.message || "Codex 请求失败", stderr));
+      else entry.resolve(message.result);
+    });
+    child.on("error", (error) => rejectPending(launchError("无法启动 Codex CLI", error.message)));
+    child.on("exit", (code, signal) => {
+      this.children.delete(child);
+      if (pending.size) rejectPending(launchError(`Codex App Server 意外退出（${signal || code}）`, stderr));
+    });
+
+    try {
+      await request("initialize", {
+        clientInfo: { name: "codex_task_inventory", title: "Codex Task Inventory", version: "0.1.0" },
+      });
+      send({ method: "initialized", params: {} });
+      return await request(method, params);
+    } finally {
+      stop();
+    }
+  }
+
+  async rename({ threadId, name }) {
+    await this.requestOnce("thread/name/set", { threadId, name });
+    return { threadId, name };
+  }
+
   async launch({ cwd, prompt }) {
     const child = spawn(this.command, ["app-server", "--listen", "stdio://"], {
       cwd,
