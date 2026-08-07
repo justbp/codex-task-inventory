@@ -58,6 +58,21 @@ const notifier = {
 const server = createTaskServer({ databasePath: join(sandbox, "monitor.db"), distDir: dist, monitor, launcher, quotaReader, notifier, pollInterval: 50, nameRefreshInterval: 0 });
 let baseUrl;
 
+const threadContractFields = [
+  "activeStartedAt", "activeTurnId", "archived", "completedAt", "createdAt", "cwd", "deepLink", "id", "kind",
+  "lane", "lastCompletedAt", "lastError", "lastFileChangeAt", "lastProgress", "lastProgressAt", "note", "pinned", "preview",
+  "priority", "project", "runtimeStatus", "sortOrder", "source", "tags", "title", "updatedAt",
+];
+
+function assertThreadContract(value) {
+  for (const field of threadContractFields) assert.equal(Object.hasOwn(value, field), true, `thread contract is missing ${field}`);
+  assert.equal(["manual", "codex"].includes(value.kind), true);
+  assert.equal(["inbox", "upcoming", "in_progress", "review", "completed"].includes(value.lane), true);
+  assert.equal(["unknown", "idle", "active", "waiting", "interrupted"].includes(value.runtimeStatus), true);
+  assert.equal(Array.isArray(value.tags), true);
+  assert.equal(Object.hasOwn(value, value.kind === "codex" ? "hidden" : "codexThreadId"), true);
+}
+
 before(async () => {
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -98,6 +113,7 @@ test("detects only in-progress to review transitions and ignores the initial sna
 test("uses Codex runtime state as the authoritative in-progress lane", async () => {
   const first = await (await fetch(`${baseUrl}/api/threads`)).json();
   assert.equal(first.threads.length, 1);
+  assertThreadContract(first.threads[0]);
   assert.equal(first.threads[0].lane, "in_progress");
   assert.equal(first.threads[0].deepLink, sample.deepLink);
 
@@ -194,6 +210,7 @@ test("persists pin state and deletes manual inbox or todo items", async () => {
     body: JSON.stringify({ title: "可置顶并删除", lane: "inbox" }),
   });
   const task = (await createdResponse.json()).item;
+  assertThreadContract(task);
 
   const pinnedResponse = await fetch(`${baseUrl}/api/items/${task.id}`, {
     method: "PATCH",

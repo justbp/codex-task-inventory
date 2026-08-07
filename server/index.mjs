@@ -44,7 +44,7 @@ function parseBody(req) {
   });
 }
 
-function initMetadata(db) {
+export function initMetadata(db) {
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA busy_timeout = 5000;

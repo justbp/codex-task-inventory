@@ -23,6 +23,8 @@ test("ships the four-stage board with separate completed and favorites pages", a
   assert.match(workspace, /thread\.deepLink/);
   assert.match(workspace, /交给 Codex/);
   assert.match(workspace, /thread\.lane === "upcoming"/);
+  assert.match(workspace, /thread\.runtimeStatus === "waiting" \? "等待我"/);
+  assert.match(workspace, /draggable=\{thread\.runtimeStatus !== "active" && thread\.runtimeStatus !== "waiting"\}/);
   assert.match(workspace, /window\.location\.pathname === "\/completed"/);
   assert.match(workspace, /href="\/completed"/);
   assert.match(workspace, /window\.location\.pathname === "\/favorites"/);
