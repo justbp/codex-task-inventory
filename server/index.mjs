@@ -9,6 +9,7 @@ import { buildTaskPrompt, CodexLauncher } from "./codex-launcher.mjs";
 import { MacOSNotifier } from "./macos-notifier.mjs";
 import { CodexQuotaReader } from "./codex-quota.mjs";
 import { createWorkItemRepository, initWorkItemSchema, migrateLegacyWork, WorkItemError } from "./work-items.mjs";
+import { createWorkContextRepository, initWorkContextSchema } from "./work-context.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SERVER_DIR, "..");
@@ -287,9 +288,11 @@ export function createTaskServer(options = {}) {
   const monitor = options.monitor || new CodexMonitor(options.monitorOptions);
   initMetadata(db);
   initWorkItemSchema(db);
+  initWorkContextSchema(db);
   const metadata = metadataRepository(db);
   const manual = manualRepository(db);
   const workItems = createWorkItemRepository(db);
+  const workContext = createWorkContextRepository(db, workItems);
   migrateLegacyWork(db, workItems, monitor.list());
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
@@ -383,8 +386,43 @@ export function createTaskServer(options = {}) {
       if (workItemRunsMatch && req.method === "GET") return json(res, 200, { runs: workItems.listRuns(workItemRunsMatch[1]) });
       if (workItemRunsMatch && req.method === "POST") {
         const body = await parseBody(req);
+        const { idempotencyKey, expectedVersion, ...input } = body;
+        if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new WorkItemError(400, "必须提供有效的 expectedVersion", "invalid_expected_version");
+        const contextEnvelope = workContext.buildEnvelope(workItemRunsMatch[1], { ...input, expectedVersion });
+        return json(res, 201, { run: workItems.createRun(workItemRunsMatch[1], {
+          ...input,
+          expectedWorkItemVersion: expectedVersion,
+          contextEnvelope,
+          contextWorkItemVersion: contextEnvelope.workItem.version,
+        }, workItemAttribution(req), idempotencyKey) });
+      }
+      const workItemContextMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/context$/i);
+      if (workItemContextMatch && req.method === "GET") return json(res, 200, { context: workContext.context(workItemContextMatch[1]) });
+      const workItemEnvelopeMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/context-envelope$/i);
+      if (workItemEnvelopeMatch && req.method === "GET") {
+        const expectedVersion = Number(url.searchParams.get("expectedVersion"));
+        if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new WorkItemError(400, "必须提供有效的 expectedVersion", "invalid_expected_version");
+        const envelope = workContext.buildEnvelope(workItemEnvelopeMatch[1], {
+          expectedVersion,
+          mode: url.searchParams.get("mode") || "implementation",
+          objective: url.searchParams.get("objective") || "",
+          expectedOutput: url.searchParams.get("expectedOutput") || "",
+        });
+        return json(res, 200, { envelope });
+      }
+      const contextCreateMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/(decisions|recovery-points|relations|evidence)$/i);
+      if (contextCreateMatch && req.method === "POST") {
+        const body = await parseBody(req);
         const { idempotencyKey, ...input } = body;
-        return json(res, 201, { run: workItems.createRun(workItemRunsMatch[1], input, workItemAttribution(req), idempotencyKey) });
+        const actor = workItemAttribution(req);
+        const handlers = {
+          decisions: workContext.createDecision,
+          "recovery-points": workContext.createRecoveryPoint,
+          relations: workContext.createRelation,
+          evidence: workContext.createEvidence,
+        };
+        const entity = handlers[contextCreateMatch[2]](contextCreateMatch[1], input, actor, idempotencyKey);
+        return json(res, 201, { entity });
       }
       const workItemAuditMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/audit$/i);
       if (workItemAuditMatch && req.method === "GET") return json(res, 200, { events: workItems.listAudit("work_item", workItemAuditMatch[1]) });
@@ -397,7 +435,10 @@ export function createTaskServer(options = {}) {
       if (workItemMatch && req.method === "PATCH") {
         const body = await parseBody(req);
         const { expectedVersion, ...change } = body;
-        return json(res, 200, { workItem: workItems.update(workItemMatch[1], expectedVersion, change, workItemAttribution(req)) });
+        if (["blocked", "parked"].includes(change.status)) throw new WorkItemError(409, "暂停或阻塞任务前必须创建 Recovery Point", "recovery_point_required");
+        const actor = workItemAttribution(req);
+        if (actor.actorType === "codex" && change.status !== undefined) throw new WorkItemError(403, "Codex 改变 Work Status 需要用户确认", "user_confirmation_required");
+        return json(res, 200, { workItem: workItems.update(workItemMatch[1], expectedVersion, change, actor) });
       }
       const runAuditMatch = url.pathname.match(/^\/api\/runs\/([0-9a-f-]+)\/audit$/i);
       if (runAuditMatch && req.method === "GET") return json(res, 200, { events: workItems.listAudit("run", runAuditMatch[1]) });
@@ -465,6 +506,7 @@ export function createTaskServer(options = {}) {
       if (!res.headersSent) json(res, status, {
         error: error instanceof ApiError || error instanceof WorkItemError ? error.message : "服务内部错误",
         ...(error instanceof WorkItemError ? { code: error.code } : {}),
+        ...(error instanceof WorkItemError && error.details ? { details: error.details } : {}),
       });
     }
   });

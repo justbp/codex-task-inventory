@@ -193,7 +193,7 @@ test("provides versioned Work Item and idempotent Run APIs with audit attributio
   assert.equal(staleResponse.status, 409);
   assert.equal((await staleResponse.json()).code, "version_conflict");
 
-  const runBody = { idempotencyKey: "api-run-one", objective: "验证新模型", status: "queued", codexThreadId: "thread-run-one" };
+  const runBody = { idempotencyKey: "api-run-one", expectedVersion: 2, mode: "explore", objective: "验证新模型", status: "queued", codexThreadId: "thread-run-one" };
   const firstRunResponse = await fetch(`${baseUrl}/api/work-items/${created.id}/runs`, {
     method: "POST", headers: { "content-type": "application/json", "x-actor-id": "wangfei" }, body: JSON.stringify(runBody),
   });
@@ -208,7 +208,7 @@ test("provides versioned Work Item and idempotent Run APIs with audit attributio
   const secondRunResponse = await fetch(`${baseUrl}/api/work-items/${created.id}/runs`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-actor-type": "codex", "x-actor-id": "codex-agent", "x-codex-thread-id": "thread-api" },
-    body: JSON.stringify({ idempotencyKey: "api-run-two", objective: "第二次运行", status: "queued", codexThreadId: "thread-run-two" }),
+    body: JSON.stringify({ idempotencyKey: "api-run-two", expectedVersion: 2, mode: "explore", objective: "第二次运行", status: "queued", codexThreadId: "thread-run-two" }),
   });
   assert.equal(secondRunResponse.status, 201);
   const listedRuns = await (await fetch(`${baseUrl}/api/work-items/${created.id}/runs`)).json();
@@ -219,6 +219,107 @@ test("provides versioned Work Item and idempotent Run APIs with audit attributio
     ["create", "wangfei", null, 1],
     ["update", "codex-agent", "thread-api", 2],
   ]);
+});
+
+test("generates frozen Context Envelopes and resumes from a Recovery Point", async () => {
+  const createdResponse = await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({
+      idempotencyKey: "api-context-item",
+      title: "API 上下文任务",
+      goal: "验证新对话可以从看板恢复",
+      nextAction: "生成 Context Envelope",
+      acceptanceCriteria: ["Run 保存不可变快照"],
+      scope: { allowed: "只修改测试数据", excluded: "不得触碰生产数据" },
+      constraints: ["不复制完整对话"],
+      status: "ready",
+      stage: "execute",
+    }),
+  });
+  assert.equal(createdResponse.status, 201);
+  const item = (await createdResponse.json()).workItem;
+
+  const envelopeResponse = await fetch(`${baseUrl}/api/work-items/${item.id}/context-envelope?expectedVersion=1&mode=implementation`);
+  assert.equal(envelopeResponse.status, 200);
+  const envelope = (await envelopeResponse.json()).envelope;
+  assert.equal(envelope.workItem.goal, "验证新对话可以从看板恢复");
+  assert.deepEqual(envelope.summarySources, [{ type: "work_item", id: item.id, version: 1 }]);
+
+  const runResponse = await fetch(`${baseUrl}/api/work-items/${item.id}/runs`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ idempotencyKey: "api-context-run", expectedVersion: 1, mode: "implementation", objective: "执行上下文快照测试" }),
+  });
+  assert.equal(runResponse.status, 201);
+  const run = (await runResponse.json()).run;
+  assert.equal(run.contextWorkItemVersion, 1);
+
+  const unsafePause = await fetch(`${baseUrl}/api/work-items/${item.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ expectedVersion: 1, status: "parked" }),
+  });
+  assert.equal(unsafePause.status, 409);
+  assert.equal((await unsafePause.json()).code, "recovery_point_required");
+
+  const recoveryResponse = await fetch(`${baseUrl}/api/work-items/${item.id}/recovery-points`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({
+      idempotencyKey: "api-recovery-one",
+      expectedVersion: 1,
+      currentConclusion: "Envelope 已生成",
+      completed: ["生成首个快照"],
+      unresolved: ["恢复验证"],
+      nextAction: "创建新 Run 验证恢复",
+      status: "parked",
+      sourceRunId: run.id,
+    }),
+  });
+  assert.equal(recoveryResponse.status, 201);
+  assert.equal((await recoveryResponse.json()).entity.resultingWorkItemVersion, 2);
+
+  const updatedResponse = await fetch(`${baseUrl}/api/work-items/${item.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ expectedVersion: 2, goal: "修改后的新目标", status: "ready" }),
+  });
+  assert.equal(updatedResponse.status, 200);
+
+  const storedRun = (await (await fetch(`${baseUrl}/api/runs/${run.id}`)).json()).run;
+  assert.equal(storedRun.contextWorkItemVersion, 1);
+  assert.equal(storedRun.contextEnvelope.workItem.goal, "验证新对话可以从看板恢复");
+  const storedContext = (await (await fetch(`${baseUrl}/api/work-items/${item.id}/context`)).json()).context;
+  assert.equal(storedContext.recoveryPoints[0].nextAction, "创建新 Run 验证恢复");
+});
+
+test("offers read-only exploration instead of starting an immature implementation Run", async () => {
+  const item = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-immature-context", title: "尚未定义清楚的工作" }),
+  })).json()).workItem;
+
+  const implementationResponse = await fetch(`${baseUrl}/api/work-items/${item.id}/runs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-immature-implementation", expectedVersion: 1, mode: "implementation" }),
+  });
+  assert.equal(implementationResponse.status, 409);
+  const notReady = await implementationResponse.json();
+  assert.equal(notReady.code, "work_item_not_ready");
+  assert.equal(notReady.details.suggestedMode, "explore");
+
+  const explorationResponse = await fetch(`${baseUrl}/api/work-items/${item.id}/runs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-immature-explore", expectedVersion: 1, mode: "explore" }),
+  });
+  assert.equal(explorationResponse.status, 201);
+  const exploration = (await explorationResponse.json()).run;
+  assert.equal(exploration.mode, "explore");
+  assert.match(exploration.contextEnvelope.scope.allowed, /只读探索/);
 });
 
 test("starts a manual task in Codex and replaces the manual card with its real thread", async () => {

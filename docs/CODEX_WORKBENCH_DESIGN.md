@@ -366,6 +366,8 @@ Context Envelope 必须记录生成时间、Work Item version 和摘要来源。
 
 ### M2：实现上下文生成、暂停与恢复
 
+实施记录：`docs/M2_CONTEXT_RECOVERY.md`
+
 **目标**
 
 保证任何新 Codex 对话都能仅依靠看板中的最新任务信息继续工作。
