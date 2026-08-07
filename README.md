@@ -2,6 +2,8 @@
 
 本机运行的 Codex 任务盘点看板。你可以先在收集箱和待办列里挂自己的事项；进入执行阶段后，由真实 Codex 对话提供运行状态和进展。
 
+M0～M2 的完整功能、验证结果和当前产品边界见 [`docs/RELEASE_NOTES_M0_M2.md`](docs/RELEASE_NOTES_M0_M2.md)。Work Item、Run 和上下文管理目前提供后端模型与 API，尚未增加对应网页表单或自动 Codex 对话集成。
+
 ## 工作方式
 
 - 从 `~/.codex/state_5.sqlite` 只读获取 Codex 任务列表，并通过 App Server 的 `thread/read` 同步用户可见名称。
@@ -11,7 +13,7 @@
 - 通过 Codex App Server 的 `account/rateLimits/read` 读取当前额度窗口，在顶部展示剩余百分比和刷新时间；结果缓存一分钟，避免频繁请求。
 - 卡片使用 `codex://threads/{threadId}` 回到对应 Codex 对话。
 - Codex 对话名称只读同步；请在 Codex 中改名，看板不提供改名入口。
-- 本地 `data/monitor.db` 仅保存项目覆盖、标签、优先级、排布、隐藏、备注和完成确认。
+- 当前页面兼容层在本地 `data/monitor.db` 保存项目覆盖、标签、优先级、排布、隐藏、备注和完成确认；Workbench 领域层另行保存 Work Item、Run、版本化上下文、恢复点、证据引用和审计记录。
 - 收集箱、待办列只展示手工事项，不再灌入历史 Codex 对话。
 - 待办列中的事项填写工作目录后，可在详情中点击“打开 Codex”；服务会使用该目录创建并启动真实 Codex 对话，然后把原手工待办绑定到该对话，不会在看板中留下重复卡片。
 - 项目和工作目录支持从已识别的 Codex 任务中下拉选择；选择项目会自动带出已有目录，也可继续手动输入新值。
