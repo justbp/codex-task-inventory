@@ -147,6 +147,80 @@ test("keeps the deprecated task endpoint unavailable", async () => {
   assert.equal((await fetch(`${baseUrl}/api/tasks`, { method: "POST" })).status, 404);
 });
 
+test("provides versioned Work Item and idempotent Run APIs with audit attribution", async () => {
+  const missingKeyResponse = await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ title: "不能被非幂等地创建" }),
+  });
+  assert.equal(missingKeyResponse.status, 400);
+  assert.equal((await missingKeyResponse.json()).code, "missing_idempotency_key");
+
+  const createdResponse = await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ idempotencyKey: "api-work-item", title: "API 工作任务", status: "ready", stage: "execute" }),
+  });
+  assert.equal(createdResponse.status, 201);
+  const created = (await createdResponse.json()).workItem;
+  assert.equal(created.version, 1);
+  assert.equal(created.source, null);
+
+  const emptyRuns = await (await fetch(`${baseUrl}/api/work-items/${created.id}/runs`)).json();
+  assert.deepEqual(emptyRuns.runs, []);
+
+  const unattributedCodexResponse = await fetch(`${baseUrl}/api/work-items/${created.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-actor-type": "codex", "x-actor-id": "codex-agent" },
+    body: JSON.stringify({ expectedVersion: 1, description: "缺少来源对话" }),
+  });
+  assert.equal(unattributedCodexResponse.status, 400);
+  assert.equal((await unattributedCodexResponse.json()).code, "missing_thread_id");
+
+  const updatedResponse = await fetch(`${baseUrl}/api/work-items/${created.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-actor-type": "codex", "x-actor-id": "codex-agent", "x-codex-thread-id": "thread-api" },
+    body: JSON.stringify({ expectedVersion: 1, description: "Codex 补充的任务说明" }),
+  });
+  assert.equal(updatedResponse.status, 200);
+  assert.equal((await updatedResponse.json()).workItem.version, 2);
+
+  const staleResponse = await fetch(`${baseUrl}/api/work-items/${created.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ expectedVersion: 1, title: "过期修改" }),
+  });
+  assert.equal(staleResponse.status, 409);
+  assert.equal((await staleResponse.json()).code, "version_conflict");
+
+  const runBody = { idempotencyKey: "api-run-one", objective: "验证新模型", status: "queued", codexThreadId: "thread-run-one" };
+  const firstRunResponse = await fetch(`${baseUrl}/api/work-items/${created.id}/runs`, {
+    method: "POST", headers: { "content-type": "application/json", "x-actor-id": "wangfei" }, body: JSON.stringify(runBody),
+  });
+  const repeatedRunResponse = await fetch(`${baseUrl}/api/work-items/${created.id}/runs`, {
+    method: "POST", headers: { "content-type": "application/json", "x-actor-id": "wangfei" }, body: JSON.stringify(runBody),
+  });
+  assert.equal(firstRunResponse.status, 201);
+  assert.equal(repeatedRunResponse.status, 201);
+  const firstRun = (await firstRunResponse.json()).run;
+  assert.equal((await repeatedRunResponse.json()).run.id, firstRun.id);
+
+  const secondRunResponse = await fetch(`${baseUrl}/api/work-items/${created.id}/runs`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-type": "codex", "x-actor-id": "codex-agent", "x-codex-thread-id": "thread-api" },
+    body: JSON.stringify({ idempotencyKey: "api-run-two", objective: "第二次运行", status: "queued", codexThreadId: "thread-run-two" }),
+  });
+  assert.equal(secondRunResponse.status, 201);
+  const listedRuns = await (await fetch(`${baseUrl}/api/work-items/${created.id}/runs`)).json();
+  assert.equal(listedRuns.runs.length, 2);
+
+  const audit = await (await fetch(`${baseUrl}/api/work-items/${created.id}/audit`)).json();
+  assert.deepEqual(audit.events.map((event) => [event.action, event.actorId, event.codexThreadId, event.afterVersion]), [
+    ["create", "wangfei", null, 1],
+    ["update", "codex-agent", "thread-api", 2],
+  ]);
+});
+
 test("starts a manual task in Codex and replaces the manual card with its real thread", async () => {
   const createdResponse = await fetch(`${baseUrl}/api/items`, {
     method: "POST",

@@ -8,6 +8,7 @@ import { CodexMonitor } from "./codex-monitor.mjs";
 import { buildTaskPrompt, CodexLauncher } from "./codex-launcher.mjs";
 import { MacOSNotifier } from "./macos-notifier.mjs";
 import { CodexQuotaReader } from "./codex-quota.mjs";
+import { createWorkItemRepository, initWorkItemSchema, migrateLegacyWork, WorkItemError } from "./work-items.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SERVER_DIR, "..");
@@ -42,6 +43,14 @@ function parseBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+function workItemAttribution(req) {
+  return {
+    actorType: req.headers["x-actor-type"] || "user",
+    actorId: req.headers["x-actor-id"] || "local-user",
+    threadId: req.headers["x-codex-thread-id"] || null,
+  };
 }
 
 export function initMetadata(db) {
@@ -275,10 +284,13 @@ export function createTaskServer(options = {}) {
   const databasePath = resolve(options.databasePath || process.env.TASKBOARD_DB || DEFAULT_DB);
   mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
+  const monitor = options.monitor || new CodexMonitor(options.monitorOptions);
   initMetadata(db);
+  initWorkItemSchema(db);
   const metadata = metadataRepository(db);
   const manual = manualRepository(db);
-  const monitor = options.monitor || new CodexMonitor(options.monitorOptions);
+  const workItems = createWorkItemRepository(db);
+  migrateLegacyWork(db, workItems, monitor.list());
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
   const notifier = options.notifier || new MacOSNotifier(options.notificationOptions);
@@ -357,6 +369,49 @@ export function createTaskServer(options = {}) {
         await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
         return json(res, 200, { threads: [...manual.list(), ...applyThreadNames(codexThreads, threadNames)] });
       }
+      if (url.pathname === "/api/work-items" && req.method === "GET") return json(res, 200, { workItems: workItems.list() });
+      if (url.pathname === "/api/work-items" && req.method === "POST") {
+        const body = await parseBody(req);
+        if ("sourceKind" in body || "sourceId" in body) throw new WorkItemError(400, "来源映射只能由系统迁移创建", "source_is_system_managed");
+        const { idempotencyKey, ...input } = body;
+        if (!idempotencyKey || !String(idempotencyKey).trim()) {
+          throw new WorkItemError(400, "必须提供 idempotencyKey", "missing_idempotency_key");
+        }
+        return json(res, 201, { workItem: workItems.create(input, workItemAttribution(req), { idempotencyKey }) });
+      }
+      const workItemRunsMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/runs$/i);
+      if (workItemRunsMatch && req.method === "GET") return json(res, 200, { runs: workItems.listRuns(workItemRunsMatch[1]) });
+      if (workItemRunsMatch && req.method === "POST") {
+        const body = await parseBody(req);
+        const { idempotencyKey, ...input } = body;
+        return json(res, 201, { run: workItems.createRun(workItemRunsMatch[1], input, workItemAttribution(req), idempotencyKey) });
+      }
+      const workItemAuditMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/audit$/i);
+      if (workItemAuditMatch && req.method === "GET") return json(res, 200, { events: workItems.listAudit("work_item", workItemAuditMatch[1]) });
+      const workItemMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)$/i);
+      if (workItemMatch && req.method === "GET") {
+        const workItem = workItems.get(workItemMatch[1]);
+        if (!workItem) throw new WorkItemError(404, "工作任务不存在", "work_item_not_found");
+        return json(res, 200, { workItem });
+      }
+      if (workItemMatch && req.method === "PATCH") {
+        const body = await parseBody(req);
+        const { expectedVersion, ...change } = body;
+        return json(res, 200, { workItem: workItems.update(workItemMatch[1], expectedVersion, change, workItemAttribution(req)) });
+      }
+      const runAuditMatch = url.pathname.match(/^\/api\/runs\/([0-9a-f-]+)\/audit$/i);
+      if (runAuditMatch && req.method === "GET") return json(res, 200, { events: workItems.listAudit("run", runAuditMatch[1]) });
+      const runMatch = url.pathname.match(/^\/api\/runs\/([0-9a-f-]+)$/i);
+      if (runMatch && req.method === "GET") {
+        const run = workItems.getRun(runMatch[1]);
+        if (!run) throw new WorkItemError(404, "运行记录不存在", "run_not_found");
+        return json(res, 200, { run });
+      }
+      if (runMatch && req.method === "PATCH") {
+        const body = await parseBody(req);
+        const { expectedVersion, ...change } = body;
+        return json(res, 200, { run: workItems.updateRun(runMatch[1], expectedVersion, change, workItemAttribution(req)) });
+      }
       if (url.pathname === "/api/items" && req.method === "POST") return json(res, 201, { item: manual.create(await parseBody(req)) });
       if (url.pathname === "/api/items/batch" && req.method === "POST") {
         const body = await parseBody(req);
@@ -405,9 +460,12 @@ export function createTaskServer(options = {}) {
       if (url.pathname.startsWith("/api/")) throw new ApiError(404, "API 不存在");
       if (!serveStatic(req, res, distDir, url.pathname)) throw new ApiError(404, "文件不存在");
     } catch (error) {
-      const status = error instanceof ApiError ? error.status : 500;
+      const status = error instanceof ApiError || error instanceof WorkItemError ? error.status : 500;
       if (status === 500) console.error(error);
-      if (!res.headersSent) json(res, status, { error: error instanceof ApiError ? error.message : "服务内部错误" });
+      if (!res.headersSent) json(res, status, {
+        error: error instanceof ApiError || error instanceof WorkItemError ? error.message : "服务内部错误",
+        ...(error instanceof WorkItemError ? { code: error.code } : {}),
+      });
     }
   });
   server.on("close", () => { clearInterval(poller); for (const item of subscribers) item.end(); launcher.close?.(); db.close(); });

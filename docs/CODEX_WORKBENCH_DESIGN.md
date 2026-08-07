@@ -332,6 +332,8 @@ Context Envelope 必须记录生成时间、Work Item version 和摘要来源。
 
 ### M1：建立 Work Item 与 Run 基础模型
 
+实施记录：`docs/M1_WORK_ITEM_RUN_MODEL.md`
+
 **目标**
 
 让工作任务成为独立事实来源，并把 Codex Thread 降为一次执行记录。
