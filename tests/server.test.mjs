@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { createTaskServer } from "../server/index.mjs";
+import { createTaskServer, findReviewTransitions } from "../server/index.mjs";
 
 const sandbox = mkdtempSync(join(tmpdir(), "codex-task-monitor-"));
 const dist = join(sandbox, "dist");
@@ -18,8 +18,9 @@ const sample = {
 };
 const monitoredThreads = [sample];
 const launches = [];
-const renames = [];
+const remoteNames = new Map();
 const quotaReads = [];
+const notifications = [];
 const monitor = { list: () => monitoredThreads };
 const quotaReader = {
   async read(options) {
@@ -32,12 +33,7 @@ const quotaReader = {
   },
 };
 const launcher = {
-  async rename(input) {
-    renames.push(input);
-    const thread = monitoredThreads.find((item) => item.id === input.threadId);
-    if (thread) thread.title = input.name;
-    return input;
-  },
+  async listThreadNames() { return new Map(remoteNames); },
   async launch(input) {
     launches.push(input);
     const id = "019fc79b-3541-7853-a09a-6bcd9ced9999";
@@ -55,7 +51,11 @@ const launcher = {
   },
   close() {},
 };
-const server = createTaskServer({ databasePath: join(sandbox, "monitor.db"), distDir: dist, monitor, launcher, quotaReader, pollInterval: 50 });
+const notifier = {
+  async notify(message) { notifications.push({ kind: "test", ...message }); return { delivered: true }; },
+  async notifyReview(thread) { notifications.push({ kind: "review", id: thread.id, title: thread.title }); return { delivered: true }; },
+};
+const server = createTaskServer({ databasePath: join(sandbox, "monitor.db"), distDir: dist, monitor, launcher, quotaReader, notifier, pollInterval: 50, nameRefreshInterval: 0 });
 let baseUrl;
 
 before(async () => {
@@ -80,6 +80,21 @@ test("serves Codex quota and forwards explicit refresh requests", async () => {
   assert.deepEqual(quotaReads.at(-1), { force: true });
 });
 
+test("sends a macOS notification test through the configured notifier", async () => {
+  const response = await fetch(`${baseUrl}/api/notifications/test`, { method: "POST" });
+  assert.equal(response.status, 200);
+  assert.equal(notifications.at(-1).kind, "test");
+  assert.match(notifications.at(-1).body, /待 Review/);
+});
+
+test("detects only in-progress to review transitions and ignores the initial snapshot", () => {
+  const active = { id: "one", lane: "in_progress" };
+  const review = { id: "one", lane: "review" };
+  assert.deepEqual(findReviewTransitions(null, [review]), []);
+  assert.deepEqual(findReviewTransitions([active], [review]), [review]);
+  assert.deepEqual(findReviewTransitions([{ id: "one", lane: "completed" }], [review]), []);
+});
+
 test("uses Codex runtime state as the authoritative in-progress lane", async () => {
   const first = await (await fetch(`${baseUrl}/api/threads`)).json();
   assert.equal(first.threads.length, 1);
@@ -93,25 +108,23 @@ test("uses Codex runtime state as the authoritative in-progress lane", async () 
   assert.deepEqual(after.threads[0].tags, ["monitor"]);
 });
 
-test("renames the real Codex thread through App Server", async () => {
+test("rejects renaming a Codex thread from the board", async () => {
   const response = await fetch(`${baseUrl}/api/threads/${sample.id}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ title: "FBA 信息缺失原因" }),
   });
-  assert.equal(response.status, 200);
-  assert.deepEqual((await response.json()).renamed, { threadId: sample.id, name: "FBA 信息缺失原因" });
-  assert.deepEqual(renames.at(-1), { threadId: sample.id, name: "FBA 信息缺失原因" });
-  const listed = await (await fetch(`${baseUrl}/api/threads`)).json();
-  assert.equal(listed.threads.find((item) => item.id === sample.id).title, "FBA 信息缺失原因");
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /不支持字段：title/);
+});
 
-  const invalid = await fetch(`${baseUrl}/api/threads/${sample.id}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ title: "   " }),
-  });
-  assert.equal(invalid.status, 400);
-  assert.match((await invalid.json()).error, /不能为空/);
+test("uses an external Codex rename even when the state database title is stale", async () => {
+  const staleTitle = sample.title;
+  remoteNames.set(sample.id, "Codex 外部改名");
+  const listed = await (await fetch(`${baseUrl}/api/threads`)).json();
+  assert.equal(sample.title, staleTitle, "the simulated SQLite title should remain stale");
+  assert.equal(listed.threads.find((item) => item.id === sample.id).title, "Codex 外部改名");
+  remoteNames.set(sample.id, "FBA 信息缺失原因");
 });
 
 test("keeps the deprecated task endpoint unavailable", async () => {

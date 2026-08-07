@@ -17,6 +17,8 @@ test("ships the four-stage board with separate completed and favorites pages", a
     assert.match(workspace, new RegExp(label));
   }
   assert.match(workspace, /new EventSource\("\/api\/events"\)/);
+  assert.match(workspace, /\/api\/notifications\/test/);
+  assert.match(workspace, /测试 macOS 通知/);
   assert.match(workspace, /completedAt/);
   assert.match(workspace, /thread\.deepLink/);
   assert.match(workspace, /交给 Codex/);
@@ -29,10 +31,15 @@ test("ships the four-stage board with separate completed and favorites pages", a
   assert.match(workspace, /onApprove=.*lane: "completed"/);
   assert.match(workspace, /className="completed-page"/);
   assert.match(workspace, /<datalist/);
+  assert.match(workspace, /role="combobox"/);
+  assert.match(workspace, /className="combobox-options"/);
+  assert.match(workspace, /没有匹配项目，可直接输入新项目/);
+  assert.match(workspace, /onMouseDown=\{\(event\) => event\.preventDefault\(\)\}/);
+  assert.match(workspace, /role="option"[^>]+onMouseDown=\{\(event\) => event\.preventDefault\(\)\}[^>]+onClick=/);
   assert.match(workspace, /onDirectorySuggested/);
-  assert.match(workspace, /修改对话名称/);
-  assert.match(workspace, /onRename=\{\(title\) => patch\(thread\.id, \{ title \}\)\}/);
-  assert.match(workspace, /<span>\{thread\.kind === "manual" \? "待办名称" : "对话名称"\}<\/span>/);
+  assert.match(workspace, /async function save\(\)[\s\S]+await onPatch\(changes\(\)\);[\s\S]+onClose\(\);[\s\S]+catch/);
+  assert.doesNotMatch(workspace, /修改对话名称|onRename|unread-badge|read: true/);
+  assert.match(workspace, /thread\.kind === "manual" && <label className="field"><span>待办名称<\/span>/);
   assert.match(workspace, /选择已有目录或输入绝对路径/);
   assert.doesNotMatch(workspace, /近期处理/);
   assert.match(workspace, /\/api\/items\/\$\{id\}\/start/);
@@ -43,6 +50,9 @@ test("ships the four-stage board with separate completed and favorites pages", a
   assert.match(styles, /\.card-list>\.task-card[^}]+flex:0 0 auto/);
   assert.match(styles, /\.completed-grid[^}]+overflow-y:auto/);
   assert.match(styles, /\.completed-grid[^}]+grid-auto-rows:max-content/);
+  assert.match(styles, /\.task-modal\s*\{[^}]+overflow:visible/);
+  assert.match(styles, /\.combobox-options::\-webkit-scrollbar\s*\{\s*display:none/);
+  assert.match(styles, /@media\(max-height:760px\)[\s\S]+\.combobox-options\s*\{[^}]+bottom:100%/);
   assert.match(styles, /@media\(max-width:900px\)[\s\S]+\.card-list,.completed-grid\s*\{\s*overflow:visible/);
   assert.doesNotMatch(`${html}\n${packageJson}`, /codex-preview|vinext|wrangler|react-loading-skeleton/i);
 });

@@ -4,12 +4,13 @@
 
 ## 工作方式
 
-- 从 `~/.codex/state_5.sqlite` 只读获取 Codex 任务列表。
+- 从 `~/.codex/state_5.sqlite` 只读获取 Codex 任务列表，并通过 App Server 的 `thread/read` 同步用户可见名称。
 - 从每个任务的 rollout JSONL 只读获取开始、完成、中断、最近进展和文件修改事件。
 - 每两秒检查一次文件是否变化，变化后通过 SSE 通知浏览器刷新。
+- 任务从“进行中”进入“待 Review”时，由常驻服务通过 macOS 通知中心提醒；首次启动只建立状态基线，不会为已有待 Review 任务补发通知。
 - 通过 Codex App Server 的 `account/rateLimits/read` 读取当前额度窗口，在顶部展示剩余百分比和刷新时间；结果缓存一分钟，避免频繁请求。
 - 卡片使用 `codex://threads/{threadId}` 回到对应 Codex 对话。
-- 卡片标题支持行内编辑，详情抽屉也可修改名称；真实 Codex 对话通过 App Server 的 `thread/name/set` 同步改名。
+- Codex 对话名称只读同步；请在 Codex 中改名，看板不提供改名入口。
 - 本地 `data/monitor.db` 仅保存项目覆盖、标签、优先级、排布、隐藏、备注和完成确认。
 - 收集箱、待办列只展示手工事项，不再灌入历史 Codex 对话。
 - 待办列中的事项填写工作目录后，可在详情中点击“打开 Codex”；服务会使用该目录创建并启动真实 Codex 对话，然后把原手工待办绑定到该对话，不会在看板中留下重复卡片。
@@ -52,6 +53,8 @@ npm run lint
 ### macOS 常驻运行
 
 仓库中的 `ops/local.codex-task-inventory.plist.example` 是用户级 `launchd` 模板。复制到 `~/Library/LaunchAgents/local.codex-task-inventory.plist` 前，请将 `__NODE_BINARY__`、`__NODE_BIN_DIR__`、`__PROJECT_DIR__` 和 `__HOME_DIR__` 替换为本机绝对路径。服务登录时自动启动、异常退出后自动拉起，日志位于 `~/Library/Logs/CodexTaskInventory/`。
+
+顶部铃铛按钮可立即发送一条测试通知。通知使用 macOS 自带的 AppleScript `display notification`，不依赖额外软件，因此看板页面关闭后，只要 `launchd` 服务仍在运行也可以收到。显示方式和声音由“系统设置 → 通知”控制；勿扰/专注模式可能延迟或隐藏横幅。若要关闭服务端通知，在 plist 的 `EnvironmentVariables` 中加入 `TASKBOARD_NOTIFICATIONS=0` 后重新加载服务。
 
 ## Codex 任务绑定
 

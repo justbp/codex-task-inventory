@@ -6,6 +6,7 @@ import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { CodexMonitor } from "./codex-monitor.mjs";
 import { buildTaskPrompt, CodexLauncher } from "./codex-launcher.mjs";
+import { MacOSNotifier } from "./macos-notifier.mjs";
 import { CodexQuotaReader } from "./codex-quota.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
@@ -229,11 +230,25 @@ export function effectiveLane(thread, meta) {
   return meta.lane;
 }
 
-function createSnapshot(monitor, metadata, { includeHidden = false } = {}) {
+function createSnapshot(monitor, metadata, threadNames = new Map(), { includeHidden = false } = {}) {
   return monitor.list().map((thread) => {
     const meta = metadata.ensure(thread);
-    return { ...thread, kind: "codex", ...meta, project: meta.projectOverride || thread.project, lane: effectiveLane(thread, meta) };
+    const syncedName = threadNames.get(thread.id);
+    return { ...thread, ...(syncedName ? { title: syncedName } : {}), kind: "codex", ...meta, project: meta.projectOverride || thread.project, lane: effectiveLane(thread, meta) };
   }).filter((thread) => (includeHidden || !thread.hidden) && ["in_progress", "review", "completed"].includes(thread.lane));
+}
+
+function applyThreadNames(threads, threadNames) {
+  return threads.map((thread) => {
+    const syncedName = threadNames.get(thread.id);
+    return syncedName ? { ...thread, title: syncedName } : thread;
+  });
+}
+
+export function findReviewTransitions(previousThreads, nextThreads) {
+  if (!previousThreads) return [];
+  const previousLanes = new Map(previousThreads.map((thread) => [thread.id, thread.lane]));
+  return nextThreads.filter((thread) => previousLanes.get(thread.id) === "in_progress" && thread.lane === "review");
 }
 
 const MIME_TYPES = { ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml", ".woff": "font/woff", ".woff2": "font/woff2" };
@@ -266,20 +281,65 @@ export function createTaskServer(options = {}) {
   const monitor = options.monitor || new CodexMonitor(options.monitorOptions);
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
+  const notifier = options.notifier || new MacOSNotifier(options.notificationOptions);
   const distDir = resolve(options.distDir || DEFAULT_DIST);
   const subscribers = new Set();
   let lastSignature = "";
-  const publishIfChanged = () => {
+  let previousThreads = null;
+  let publishRunning = false;
+  let publishPending = false;
+  let threadNames = new Map();
+  let namesRefreshedAt = 0;
+  let namesRefreshPromise = null;
+  const nameRefreshInterval = Math.max(0, Number(options.nameRefreshInterval ?? 5000));
+  const refreshThreadNames = async ({ force = false, threadIds = [] } = {}) => {
+    if (typeof launcher.listThreadNames !== "function") return threadNames;
+    if (!force && Date.now() - namesRefreshedAt < nameRefreshInterval) return threadNames;
+    if (namesRefreshPromise) return namesRefreshPromise;
+    namesRefreshPromise = (async () => {
+      try {
+        const refreshed = await launcher.listThreadNames({ threadIds });
+        threadNames = refreshed instanceof Map ? refreshed : new Map(Object.entries(refreshed || {}));
+      } catch (error) {
+        console.error("Codex thread name refresh failed", error);
+      } finally {
+        namesRefreshedAt = Date.now();
+        namesRefreshPromise = null;
+      }
+      return threadNames;
+    })();
+    return namesRefreshPromise;
+  };
+  const publishOnce = async () => {
     try {
-      const threads = [...manual.list(), ...createSnapshot(monitor, metadata)];
+      const codexThreads = createSnapshot(monitor, metadata);
+      await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
+      const threads = [...manual.list(), ...applyThreadNames(codexThreads, threadNames)];
       const signature = JSON.stringify(threads.map((item) => [item.id, item.title, item.updatedAt, item.runtimeStatus, item.lastProgressAt, item.lane, item.pinned, item.hidden]));
       if (signature === lastSignature) return;
+      const reviewTransitions = findReviewTransitions(previousThreads, threads);
+      previousThreads = threads;
       lastSignature = signature;
       const payload = `event: threads-changed\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`;
       for (const subscriber of subscribers) subscriber.write(payload);
+      for (const thread of reviewTransitions) {
+        void notifier.notifyReview(thread).catch((error) => console.error("macOS review notification failed", error));
+      }
     } catch (error) { console.error("Codex monitor refresh failed", error); }
   };
-  const poller = setInterval(publishIfChanged, Number(options.pollInterval || 2000));
+  const publishIfChanged = async () => {
+    if (publishRunning) { publishPending = true; return; }
+    publishRunning = true;
+    try {
+      do {
+        publishPending = false;
+        await publishOnce();
+      } while (publishPending);
+    } finally {
+      publishRunning = false;
+    }
+  };
+  const poller = setInterval(() => void publishIfChanged(), Number(options.pollInterval || 2000));
   poller.unref();
 
   const server = createServer(async (req, res) => {
@@ -287,7 +347,16 @@ export function createTaskServer(options = {}) {
       const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
       if (url.pathname === "/api/health") return json(res, 200, { ok: true, source: "codex-local-state", tokenUsage: false });
       if (url.pathname === "/api/quota" && req.method === "GET") return json(res, 200, { quota: await quotaReader.read({ force: url.searchParams.get("refresh") === "1" }) });
-      if (url.pathname === "/api/threads" && req.method === "GET") return json(res, 200, { threads: [...manual.list(), ...createSnapshot(monitor, metadata, { includeHidden: url.searchParams.get("hidden") === "1" })] });
+      if (url.pathname === "/api/notifications/test" && req.method === "POST") {
+        const result = await notifier.notify({ title: "Codex Task Monitor", subtitle: "macOS 通知测试", body: "通知已开启，任务进入待 Review 时会提醒你。" });
+        if (!result.delivered) throw new ApiError(503, result.reason || "系统通知发送失败");
+        return json(res, 200, result);
+      }
+      if (url.pathname === "/api/threads" && req.method === "GET") {
+        const codexThreads = createSnapshot(monitor, metadata, new Map(), { includeHidden: url.searchParams.get("hidden") === "1" });
+        await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
+        return json(res, 200, { threads: [...manual.list(), ...applyThreadNames(codexThreads, threadNames)] });
+      }
       if (url.pathname === "/api/items" && req.method === "POST") return json(res, 201, { item: manual.create(await parseBody(req)) });
       if (url.pathname === "/api/items/batch" && req.method === "POST") {
         const body = await parseBody(req);
@@ -324,18 +393,14 @@ export function createTaskServer(options = {}) {
         if (!thread) throw new ApiError(404, "Codex 任务不存在或尚未同步");
         const body = await parseBody(req);
         if (!body || typeof body !== "object" || Array.isArray(body)) throw new ApiError(400, "请求内容必须是对象");
-        const { title, ...metadataChange } = body;
-        let renamed = null;
-        if (title !== undefined) {
-          const name = String(title).trim().slice(0, 300);
-          if (!name) throw new ApiError(400, "对话名称不能为空");
-          renamed = await launcher.rename({ threadId: match[1], name });
-        }
-        const currentMetadata = Object.keys(metadataChange).length
-          ? metadata.patch(match[1], metadataChange, { lastCompletedAt: thread.lastCompletedAt || null, lastInterruptedAt: thread.lastInterruptedAt || null })
+        const currentMetadata = Object.keys(body).length
+          ? metadata.patch(match[1], body, {
+              lastCompletedAt: thread.lastCompletedAt || null,
+              lastInterruptedAt: thread.lastInterruptedAt || null,
+            })
           : metadata.get(match[1]);
         publishIfChanged();
-        return json(res, 200, { metadata: currentMetadata, renamed });
+        return json(res, 200, { metadata: currentMetadata });
       }
       if (url.pathname.startsWith("/api/")) throw new ApiError(404, "API 不存在");
       if (!serveStatic(req, res, distDir, url.pathname)) throw new ApiError(404, "文件不存在");

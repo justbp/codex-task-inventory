@@ -13,14 +13,16 @@ function launchError(message, detail = "") {
 
 export class CodexLauncher {
   constructor(options = {}) {
-    const userInstall = join(homedir(), ".npm-global", "bin", "codex");
+    const userHome = homedir();
+    const userInstall = join(userHome, ".npm-global", "bin", "codex");
     this.command = options.command || process.env.CODEX_BIN || (existsSync(userInstall) ? userInstall : "codex");
+    this.env = { ...process.env, HOME: process.env.HOME || userHome, CODEX_HOME: process.env.CODEX_HOME || join(userHome, ".codex") };
     this.children = new Set();
   }
 
-  async requestOnce(method, params = {}) {
+  async withClient(run) {
     const child = spawn(this.command, ["app-server", "--listen", "stdio://"], {
-      env: process.env,
+      env: this.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.children.add(child);
@@ -75,21 +77,34 @@ export class CodexLauncher {
         clientInfo: { name: "codex_task_inventory", title: "Codex Task Inventory", version: "0.1.0" },
       });
       send({ method: "initialized", params: {} });
-      return await request(method, params);
+      return await run(request);
     } finally {
       stop();
     }
   }
 
-  async rename({ threadId, name }) {
-    await this.requestOnce("thread/name/set", { threadId, name });
-    return { threadId, name };
+  async requestOnce(method, params = {}) {
+    return this.withClient((request) => request(method, params));
+  }
+
+  async listThreadNames({ threadIds } = {}) {
+    const ids = [...new Set(threadIds || [])];
+    if (!ids.length) return new Map();
+    return this.withClient(async (request) => {
+      const names = new Map();
+      for (let offset = 0; offset < ids.length; offset += 20) {
+        const batch = ids.slice(offset, offset + 20);
+        const results = await Promise.all(batch.map((threadId) => request("thread/read", { threadId, includeTurns: false })));
+        results.forEach((result, index) => names.set(batch[index], result?.thread?.name || null));
+      }
+      return names;
+    });
   }
 
   async launch({ cwd, prompt }) {
     const child = spawn(this.command, ["app-server", "--listen", "stdio://"], {
       cwd,
-      env: process.env,
+      env: this.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.children.add(child);
