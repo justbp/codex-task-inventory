@@ -12,6 +12,8 @@ M2 把执行所需的长期上下文从 Codex 对话中移到 Work Item。启动
 
 本里程碑仍不新增页面，不负责真实创建 Codex thread、Decision Request 路由、Review Submission 或今日工作台。
 
+上下文管理的目标交互模拟见：`docs/CONTEXT_MANAGEMENT_INTERACTION_SPEC.md`。后续实现必须以该规格区分“任务事实、对话过程和原始证据”，并持续更新其中的实现状态表。
+
 ## 2. Work Item 上下文字段
 
 `work_items` 新增：

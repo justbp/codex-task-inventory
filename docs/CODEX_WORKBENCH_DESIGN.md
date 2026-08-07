@@ -148,6 +148,8 @@ Work Item 和评论写入必须带 expected version。发生版本冲突时重�
 
 ## 5. 三方交互协议
 
+完整的真实工作模拟与交互口径见：`docs/CONTEXT_MANAGEMENT_INTERACTION_SPEC.md`。该文档描述目标产品形态，不代表其中所有界面与 Codex 集成都已实现。
+
 ### 5.1 捕获
 
 1. 用户输入一句话或从 Codex 对话创建任务。
