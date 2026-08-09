@@ -260,6 +260,40 @@ test("provides versioned Work Item and idempotent Run APIs with audit attributio
   ]);
 });
 
+test("lets only the user select a versioned today mainline", async () => {
+  const created = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ idempotencyKey: "server-today-focus", title: "安排今日主线", status: "ready" }),
+  })).json()).workItem;
+
+  const selectedResponse = await fetch(`${baseUrl}/api/work-items/${created.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ expectedVersion: created.version, todayFocus: true }),
+  });
+  assert.equal(selectedResponse.status, 200);
+  const selected = (await selectedResponse.json()).workItem;
+  assert.equal(selected.todayFocus, true);
+  assert.equal(selected.status, "ready", "planning attention must not rewrite Work Status");
+
+  const codexResponse = await fetch(`${baseUrl}/api/work-items/${created.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-actor-type": "codex", "x-actor-id": "manager", "x-codex-thread-id": "manager-thread" },
+    body: JSON.stringify({ expectedVersion: selected.version, todayFocus: false }),
+  });
+  assert.equal(codexResponse.status, 403);
+  assert.equal((await codexResponse.json()).code, "user_confirmation_required");
+
+  const staleResponse = await fetch(`${baseUrl}/api/work-items/${created.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ expectedVersion: created.version, todayFocus: false }),
+  });
+  assert.equal(staleResponse.status, 409);
+  assert.equal((await (await fetch(`${baseUrl}/api/work-items/${created.id}`)).json()).workItem.todayFocus, true);
+});
+
 test("generates frozen Context Envelopes and resumes from a Recovery Point", async () => {
   const createdResponse = await fetch(`${baseUrl}/api/work-items`, {
     method: "POST",

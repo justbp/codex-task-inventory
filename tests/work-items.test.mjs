@@ -94,6 +94,25 @@ test("prevents Codex attribution from confirming a work item as done", () => wit
   assert.equal(repository.get(workItem.id).status, "in_review");
 }));
 
+test("keeps today's mainline as a versioned user decision", () => withRepository(({ repository }) => {
+  const created = repository.create(
+    { title: "今日主线候选", status: "ready" },
+    { actorType: "user", actorId: "wangfei" },
+    { idempotencyKey: "today-focus-work-item" },
+  );
+  assert.equal(created.todayFocus, false);
+
+  const focused = repository.update(created.id, created.version, { todayFocus: true }, { actorType: "user", actorId: "wangfei" });
+  assert.equal(focused.todayFocus, true);
+  assert.equal(focused.version, 2);
+  assert.throws(
+    () => repository.update(focused.id, focused.version, { todayFocus: false }, { actorType: "codex", actorId: "codex-agent", threadId: "manager-thread" }),
+    (error) => error.code === "user_confirmation_required" && error.status === 403,
+  );
+  assert.equal(repository.get(created.id).todayFocus, true);
+  assert.deepEqual(repository.listAudit("work_item", created.id).map((event) => [event.actorType, event.afterVersion]), [["user", 1], ["user", 2]]);
+}));
+
 test("maps legacy manual tasks and Codex metadata without duplicating a bound task", () => withRepository(({ db, repository }) => {
   db.prepare(`INSERT INTO manual_tasks
     (id,title,note,lane,project,cwd,tags,priority,sort_order,pinned,codex_thread_id,completed_at,created_at,updated_at)

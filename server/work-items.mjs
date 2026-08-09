@@ -82,6 +82,7 @@ export function initWorkItemSchema(db) {
       priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low','medium','high')),
       sort_order INTEGER NOT NULL DEFAULT 0,
       pinned INTEGER NOT NULL DEFAULT 0,
+      today_focus INTEGER NOT NULL DEFAULT 0,
       hidden INTEGER NOT NULL DEFAULT 0,
       source_kind TEXT CHECK (source_kind IN ('manual','codex')),
       source_id TEXT,
@@ -150,6 +151,7 @@ export function initWorkItemSchema(db) {
   addColumn("work_items", workItemColumns, "scope_excluded", "TEXT NOT NULL DEFAULT ''");
   addColumn("work_items", workItemColumns, "stop_conditions", "TEXT NOT NULL DEFAULT '[]'");
   addColumn("work_items", workItemColumns, "constraints", "TEXT NOT NULL DEFAULT '[]'");
+  addColumn("work_items", workItemColumns, "today_focus", "INTEGER NOT NULL DEFAULT 0");
   addColumn("work_item_runs", runColumns, "run_mode", "TEXT NOT NULL DEFAULT 'implementation'");
   addColumn("work_item_runs", runColumns, "expected_output", "TEXT NOT NULL DEFAULT ''");
   addColumn("work_item_runs", runColumns, "context_envelope", "TEXT");
@@ -183,6 +185,7 @@ function mapWorkItem(row) {
     priority: row.priority,
     sortOrder: row.sort_order,
     pinned: Boolean(row.pinned),
+    todayFocus: Boolean(row.today_focus),
     hidden: Boolean(row.hidden),
     source: row.source_kind && row.source_id ? { kind: row.source_kind, id: row.source_id } : null,
     version: row.version,
@@ -272,6 +275,7 @@ function normalizeWorkItem(input, current = {}) {
   }
   if (input.sortOrder !== undefined) next.sortOrder = Number.isSafeInteger(input.sortOrder) ? input.sortOrder : (next.sortOrder || 0);
   if (input.pinned !== undefined) next.pinned = Boolean(input.pinned);
+  if (input.todayFocus !== undefined) next.todayFocus = Boolean(input.todayFocus);
   if (input.hidden !== undefined) next.hidden = Boolean(input.hidden);
   if (input.sourceKind !== undefined) {
     if (input.sourceKind !== null && !["manual", "codex"].includes(input.sourceKind)) throw new WorkItemError(400, "无效的来源类型", "invalid_source_kind");
@@ -293,6 +297,7 @@ function normalizeWorkItem(input, current = {}) {
   next.priority ??= "medium";
   next.sortOrder ??= 0;
   next.pinned ??= false;
+  next.todayFocus ??= false;
   next.hidden ??= false;
   next.sourceKind ??= null;
   next.sourceId ??= null;
@@ -351,10 +356,10 @@ export function createWorkItemRepository(db) {
   const findWorkItemBySource = db.prepare("SELECT * FROM work_items WHERE source_kind=? AND source_id=?");
   const listWorkItems = db.prepare("SELECT * FROM work_items ORDER BY updated_at DESC, id");
   const insertWorkItem = db.prepare(`INSERT INTO work_items
-    (id,title,description,goal,next_action,acceptance_criteria,scope_allowed,scope_excluded,stop_conditions,constraints,status,stage,project,cwd,tags,priority,sort_order,pinned,hidden,source_kind,source_id,version,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    (id,title,description,goal,next_action,acceptance_criteria,scope_allowed,scope_excluded,stop_conditions,constraints,status,stage,project,cwd,tags,priority,sort_order,pinned,today_focus,hidden,source_kind,source_id,version,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   const updateWorkItem = db.prepare(`UPDATE work_items SET
-    title=?,description=?,goal=?,next_action=?,acceptance_criteria=?,scope_allowed=?,scope_excluded=?,stop_conditions=?,constraints=?,status=?,stage=?,project=?,cwd=?,tags=?,priority=?,sort_order=?,pinned=?,hidden=?,version=?,updated_at=?
+    title=?,description=?,goal=?,next_action=?,acceptance_criteria=?,scope_allowed=?,scope_excluded=?,stop_conditions=?,constraints=?,status=?,stage=?,project=?,cwd=?,tags=?,priority=?,sort_order=?,pinned=?,today_focus=?,hidden=?,version=?,updated_at=?
     WHERE id=? AND version=?`);
   const findRun = db.prepare("SELECT * FROM work_item_runs WHERE id=?");
   const findRunByThread = db.prepare("SELECT * FROM work_item_runs WHERE codex_thread_id=? ORDER BY created_at LIMIT 1");
@@ -414,7 +419,7 @@ export function createWorkItemRepository(db) {
         id, normalized.title, normalized.description, normalized.goal, normalized.nextAction, JSON.stringify(normalized.acceptanceCriteria),
         normalized.scope.allowed, normalized.scope.excluded, JSON.stringify(normalized.stopConditions), JSON.stringify(normalized.constraints),
         normalized.status, normalized.stage, normalized.project, normalized.cwd,
-        JSON.stringify(normalized.tags), normalized.priority, normalized.sortOrder, normalized.pinned ? 1 : 0, normalized.hidden ? 1 : 0,
+        JSON.stringify(normalized.tags), normalized.priority, normalized.sortOrder, normalized.pinned ? 1 : 0, normalized.todayFocus ? 1 : 0, normalized.hidden ? 1 : 0,
         normalized.sourceKind, normalized.sourceId, 1, createdAt, createdAt,
       );
       const created = mapWorkItem(findWorkItem.get(id));
@@ -435,11 +440,14 @@ export function createWorkItemRepository(db) {
       if (current.version !== expectedVersion) throw new WorkItemError(409, "工作任务已被其他操作修改，请重新读取", "version_conflict");
       const next = normalizeWorkItem(change, { ...current, sourceKind: current.source?.kind || null, sourceId: current.source?.id || null });
       assertCodexCannotComplete(attribution, next.status);
+      if (attribution.actorType === "codex" && next.todayFocus !== current.todayFocus) {
+        throw new WorkItemError(403, "Codex 不能替用户决定今日主线", "user_confirmation_required");
+      }
       const nextVersion = current.version + 1;
       const result = updateWorkItem.run(
         next.title, next.description, next.goal, next.nextAction, JSON.stringify(next.acceptanceCriteria), next.scope.allowed, next.scope.excluded,
         JSON.stringify(next.stopConditions), JSON.stringify(next.constraints), next.status, next.stage, next.project, next.cwd, JSON.stringify(next.tags), next.priority,
-        next.sortOrder, next.pinned ? 1 : 0, next.hidden ? 1 : 0, nextVersion, now(), id, expectedVersion,
+        next.sortOrder, next.pinned ? 1 : 0, next.todayFocus ? 1 : 0, next.hidden ? 1 : 0, nextVersion, now(), id, expectedVersion,
       );
       if (Number(result.changes) !== 1) throw new WorkItemError(409, "工作任务已被其他操作修改，请重新读取", "version_conflict");
       const updated = mapWorkItem(findWorkItem.get(id));

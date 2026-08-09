@@ -4,10 +4,12 @@ import test from "node:test";
 
 const root = new URL("../", import.meta.url);
 
-test("ships the four-stage board with separate completed and favorites pages", async () => {
-  const [html, workspace, styles, packageJson] = await Promise.all([
+test("ships the unchanged Run board and a separate Work Item today workspace", async () => {
+  const [html, workspace, todayWorkspace, main, styles, packageJson] = await Promise.all([
     readFile(new URL("index.html", root), "utf8"),
     readFile(new URL("app/components/TaskWorkspace.tsx", root), "utf8"),
+    readFile(new URL("app/components/TodayWorkspace.tsx", root), "utf8"),
+    readFile(new URL("src/main.tsx", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
   ]);
@@ -29,6 +31,7 @@ test("ships the four-stage board with separate completed and favorites pages", a
   assert.match(workspace, /href="\/completed"/);
   assert.match(workspace, /window\.location\.pathname === "\/favorites"/);
   assert.match(workspace, /href="\/favorites"/);
+  assert.match(workspace, /href="\/today"/);
   assert.match(workspace, /className="review-approve"/);
   assert.match(workspace, /onApprove=.*lane: "completed"/);
   assert.match(workspace, /className="completed-page"/);
@@ -56,5 +59,13 @@ test("ships the four-stage board with separate completed and favorites pages", a
   assert.match(styles, /\.combobox-options::\-webkit-scrollbar\s*\{\s*display:none/);
   assert.match(styles, /@media\(max-height:760px\)[\s\S]+\.combobox-options\s*\{[^}]+bottom:100%/);
   assert.match(styles, /@media\(max-width:900px\)[\s\S]+\.card-list,.completed-grid\s*\{\s*overflow:visible/);
+  assert.match(main, /window\.location\.pathname === "\/today"/);
+  for (const label of ["今日主线", "后台执行", "等待决定", "待验收", "停车场"]) assert.match(todayWorkspace, new RegExp(label));
+  assert.match(todayWorkspace, /\/api\/work-items/);
+  assert.match(todayWorkspace, /expectedVersion: item\.version, todayFocus/);
+  assert.match(todayWorkspace, /\["ready", "active", "blocked"\]\.includes\(item\.status\)/);
+  assert.match(todayWorkspace, /由你选择，Codex 不会自动改变计划/);
+  assert.doesNotMatch(todayWorkspace, /\/api\/threads/);
+  assert.match(styles, /\.today-board/);
   assert.doesNotMatch(`${html}\n${packageJson}`, /codex-preview|vinext|wrangler|react-loading-skeleton/i);
 });

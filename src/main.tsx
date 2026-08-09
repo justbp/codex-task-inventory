@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import TaskWorkspace from "../app/components/TaskWorkspace";
+import TodayWorkspace from "../app/components/TodayWorkspace";
 import "../app/globals.css";
 
 const root = document.getElementById("root");
@@ -11,6 +12,6 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <TaskWorkspace />
+    {window.location.pathname === "/today" ? <TodayWorkspace /> : <TaskWorkspace />}
   </StrictMode>,
 );
