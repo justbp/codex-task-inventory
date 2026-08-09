@@ -321,7 +321,8 @@ reason: 无法确认修复字段是否影响后续校验
 | Codex turn 终态同步到 Run | 已实现 | M3.1 |
 | Review Submission 结构化摘要 | 已实现 API | M3.1 |
 | Codex 过程进展自动结构化回写 | 未实现 | M3 后续 |
-| Decision Request 卡片与回答路由 | 未实现 | M3 |
+| Decision Request 领域 API 与回答原 Run 路由 | 已实现 API | M3.2 |
+| Decision Request 正式卡片交互 | 未实现 | M4 |
 | 人工通过、退回和创建后续任务 | 未实现 | M3 后续 |
 | 今日工作台 | 未实现 | M4 |
 

@@ -84,7 +84,7 @@ function mapReview(row) {
   };
 }
 
-export function createWorkReviewRepository(db, workItems) {
+export function createWorkReviewRepository(db, workItems, workDecisions = null) {
   const findReview = db.prepare("SELECT * FROM work_item_review_submissions WHERE id=?");
   const findByRun = db.prepare("SELECT * FROM work_item_review_submissions WHERE run_id=?");
   const listByWorkItem = db.prepare("SELECT * FROM work_item_review_submissions WHERE work_item_id=? ORDER BY rowid");
@@ -97,6 +97,15 @@ export function createWorkReviewRepository(db, workItems) {
     if (!run) throw new WorkItemError(404, "运行记录不存在", "run_not_found");
     if (run.codexThreadId !== event.threadId || run.codexTurnId !== event.turnId) {
       throw new WorkItemError(409, "完成事件与 Run 绑定的 thread/turn 不匹配", "terminal_turn_mismatch");
+    }
+    if (workDecisions?.shouldDeferCompletion(runId, event)) {
+      return {
+        run,
+        review: null,
+        workItem: workItems.get(run.workItemId),
+        replayed: false,
+        deferredForDecision: true,
+      };
     }
     const eventKey = `${event.threadId}:${event.turnId}:${event.status}`;
     const attribution = { actorType: "system", actorId: "codex-turn-listener", threadId: event.threadId };

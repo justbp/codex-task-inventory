@@ -442,6 +442,208 @@ test("synchronizes a completed Codex turn into one Review Submission and in_revi
   assert.equal((await (await fetch(`${baseUrl}/api/work-items/${item.id}`)).json()).workItem.status, "in_review");
 });
 
+test("routes a structured Decision Request answer back to the exact original Run", async () => {
+  const item = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({
+      idempotencyKey: "api-decision-item",
+      title: "M3.2 决策路由测试",
+      goal: "让用户在看板回答后继续原 Codex task",
+      nextAction: "选择安全的实现策略",
+      acceptanceCriteria: ["答案只进入原 task", "回答后继续同一 Run"],
+      scope: { allowed: "只操作测试数据", excluded: "不操作外部系统" },
+      cwd: sandbox,
+      status: "ready",
+      stage: "execute",
+    }),
+  })).json()).workItem;
+  const started = await (await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-decision-start", expectedVersion: 1 }),
+  })).json();
+  const initialRun = started.run;
+  const initialLaunch = launches.at(-1);
+  const requestBody = {
+    idempotencyKey: "api-decision-request",
+    expectedRunVersion: initialRun.version,
+    expectedWorkItemVersion: item.version,
+    sourceTurnId: initialRun.codexTurnId,
+    question: "应采用哪个实现策略？",
+    contextSummary: "方案 A 更小且可逆，方案 B 会扩大范围。",
+    options: [
+      { id: "safe", label: "采用方案 A", description: "保持当前范围" },
+      { id: "expand", label: "采用方案 B", description: "扩大实现范围" },
+    ],
+    recommendedOptionId: "safe",
+    recommendationReason: "风险更低且满足本轮目标",
+    risks: "方案 B 会增加回归范围",
+    defaultConsequence: "不回答则 Run 保持等待，不继续执行",
+  };
+
+  const wrongSource = await fetch(`${baseUrl}/api/runs/${initialRun.id}/decision-requests`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-type": "codex", "x-actor-id": "codex-agent", "x-codex-thread-id": "wrong-thread" },
+    body: JSON.stringify({ ...requestBody, idempotencyKey: "api-decision-wrong-source" }),
+  });
+  assert.equal(wrongSource.status, 409);
+  assert.equal((await wrongSource.json()).code, "decision_source_mismatch");
+
+  const createdResponse = await fetch(`${baseUrl}/api/runs/${initialRun.id}/decision-requests`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-type": "codex", "x-actor-id": "codex-agent", "x-codex-thread-id": initialRun.codexThreadId },
+    body: JSON.stringify(requestBody),
+  });
+  assert.equal(createdResponse.status, 201);
+  const decisionRequest = (await createdResponse.json()).decisionRequest;
+  assert.equal(decisionRequest.status, "pending");
+  assert.equal(decisionRequest.sourceThreadId, initialRun.codexThreadId);
+  assert.equal(decisionRequest.sourceTurnId, initialRun.codexTurnId);
+  assert.equal((await (await fetch(`${baseUrl}/api/runs/${initialRun.id}`)).json()).run.status, "waiting");
+  const awaitingItem = (await (await fetch(`${baseUrl}/api/work-items/${item.id}`)).json()).workItem;
+  assert.equal(awaitingItem.status, "awaiting_decision");
+
+  const deferred = await initialLaunch.onTurnCompleted({
+    threadId: initialRun.codexThreadId,
+    turnId: initialRun.codexTurnId,
+    status: "completed",
+    completedAt: "2026-08-09T07:00:00.000Z",
+    finalMessage: "已提交结构化决定请求，等待用户回答。",
+  });
+  assert.equal(deferred.deferredForDecision, true);
+  assert.equal(deferred.run.status, "waiting");
+  assert.equal((await (await fetch(`${baseUrl}/api/work-items/${item.id}/reviews`)).json()).reviews.length, 0);
+
+  const waitingRun = (await (await fetch(`${baseUrl}/api/runs/${initialRun.id}`)).json()).run;
+  const beforeAnswerLaunches = launches.length;
+  const answerBody = {
+    idempotencyKey: "api-decision-answer",
+    expectedVersion: decisionRequest.version,
+    expectedRunVersion: waitingRun.version,
+    expectedWorkItemVersion: awaitingItem.version,
+    optionId: "safe",
+    answerText: "按最小可逆方案继续。",
+  };
+  const answerResponse = await fetch(`${baseUrl}/api/decision-requests/${decisionRequest.id}/answer`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify(answerBody),
+  });
+  assert.equal(answerResponse.status, 201);
+  const answered = await answerResponse.json();
+  assert.equal(answered.decisionRequest.status, "answered");
+  assert.equal(answered.decisionRequest.routingState, "routed");
+  assert.equal(answered.decisionRequest.answerThreadId, initialRun.codexThreadId);
+  assert.ok(answered.decisionRequest.answerTurnId);
+  assert.equal(answered.run.status, "running");
+  assert.equal(answered.run.codexThreadId, initialRun.codexThreadId);
+  assert.equal(answered.run.codexTurnId, answered.decisionRequest.answerTurnId);
+  assert.equal(answered.workItem.status, "active");
+  assert.equal(launches.at(-1).threadId, initialRun.codexThreadId);
+  assert.match(launches.at(-1).prompt, /按最小可逆方案继续/);
+
+  const replayResponse = await fetch(`${baseUrl}/api/decision-requests/${decisionRequest.id}/answer`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify(answerBody),
+  });
+  assert.equal(replayResponse.status, 200);
+  assert.equal((await replayResponse.json()).replayed, true);
+  assert.equal(launches.length, beforeAnswerLaunches + 1, "same answer idempotency key must not create another turn");
+
+  const answerLaunch = launches.at(-1);
+  const completed = await answerLaunch.onTurnCompleted({
+    threadId: answered.run.codexThreadId,
+    turnId: answered.run.codexTurnId,
+    status: "completed",
+    completedAt: "2026-08-09T07:01:00.000Z",
+    finalMessage: "## 已完成\n按用户决定完成实现\n\n## 验证结果\n路由测试通过\n\n## 风险\n无\n\n## 需要用户决定\n无\n\n## 下一步\n请用户验收",
+  });
+  assert.equal(completed.run.status, "completed");
+  assert.equal(completed.workItem.status, "in_review");
+  assert.equal(completed.review.completedSummary, "按用户决定完成实现");
+
+  const storedContext = (await (await fetch(`${baseUrl}/api/work-items/${item.id}/context`)).json()).context;
+  assert.equal(storedContext.decisions.length, 1);
+  assert.match(storedContext.decisions[0].decision, /方案 A/);
+  const listed = (await (await fetch(`${baseUrl}/api/work-items/${item.id}/decision-requests`)).json()).decisionRequests;
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].answerTurnId, answered.run.codexTurnId);
+  assert.equal(listed[0].sourceUri, `codex://threads/${initialRun.codexThreadId}?turn=${initialRun.codexTurnId}`);
+  assert.equal(listed[0].answerUri, `codex://threads/${answered.run.codexThreadId}?turn=${answered.run.codexTurnId}`);
+  const audit = (await (await fetch(`${baseUrl}/api/decision-requests/${decisionRequest.id}/audit`)).json()).events;
+  assert.deepEqual(audit.map((event) => [event.action, event.actorType, event.actorId]), [
+    ["create", "codex", "codex-agent"],
+    ["answer_claimed", "user", "wangfei"],
+    ["route_routed", "system", "decision-router"],
+  ]);
+});
+
+test("distinguishes safe decision-route retries from uncertain Codex side effects", async () => {
+  async function prepare(key) {
+    const item = (await (await fetch(`${baseUrl}/api/work-items`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: `${key}-item`, title: `${key} 决策失败测试`, cwd: sandbox }),
+    })).json()).workItem;
+    const run = (await (await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: `${key}-start`, expectedVersion: 1, mode: "explore" }),
+    })).json()).run;
+    const request = (await (await fetch(`${baseUrl}/api/runs/${run.id}/decision-requests`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-actor-type": "codex", "x-codex-thread-id": run.codexThreadId },
+      body: JSON.stringify({
+        idempotencyKey: `${key}-request`, expectedRunVersion: run.version, expectedWorkItemVersion: item.version,
+        sourceTurnId: run.codexTurnId, question: "是否继续？", contextSummary: "验证外部副作用失败语义。",
+        options: [{ id: "yes", label: "继续" }, { id: "no", label: "停止" }], recommendedOptionId: "yes",
+      }),
+    })).json()).decisionRequest;
+    return {
+      item: (await (await fetch(`${baseUrl}/api/work-items/${item.id}`)).json()).workItem,
+      run: (await (await fetch(`${baseUrl}/api/runs/${run.id}`)).json()).run,
+      request,
+    };
+  }
+
+  const failed = await prepare("api-decision-route-failed");
+  const failedAnswer = {
+    idempotencyKey: "api-decision-route-failed-answer", expectedVersion: failed.request.version,
+    expectedRunVersion: failed.run.version, expectedWorkItemVersion: failed.item.version,
+    optionId: "yes", answerText: "模拟启动失败",
+  };
+  const beforeFailed = launches.length;
+  const failedResponse = await fetch(`${baseUrl}/api/decision-requests/${failed.request.id}/answer`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(failedAnswer),
+  });
+  assert.equal(failedResponse.status, 502);
+  assert.equal((await failedResponse.json()).code, "decision_route_failed");
+  const failedRetry = await fetch(`${baseUrl}/api/decision-requests/${failed.request.id}/answer`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(failedAnswer),
+  });
+  assert.equal(failedRetry.status, 502);
+  assert.equal(launches.length, beforeFailed + 2, "failure before thread/resume is safe to retry with the same key");
+
+  const uncertain = await prepare("api-decision-route-uncertain");
+  const uncertainAnswer = {
+    idempotencyKey: "api-decision-route-uncertain-answer", expectedVersion: uncertain.request.version,
+    expectedRunVersion: uncertain.run.version, expectedWorkItemVersion: uncertain.item.version,
+    optionId: "yes", answerText: "模拟不确定结果",
+  };
+  const beforeUncertain = launches.length;
+  const uncertainResponse = await fetch(`${baseUrl}/api/decision-requests/${uncertain.request.id}/answer`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(uncertainAnswer),
+  });
+  assert.equal(uncertainResponse.status, 502);
+  assert.equal((await uncertainResponse.json()).code, "decision_route_uncertain");
+  const uncertainRetry = await fetch(`${baseUrl}/api/decision-requests/${uncertain.request.id}/answer`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(uncertainAnswer),
+  });
+  assert.equal(uncertainRetry.status, 409);
+  assert.equal((await uncertainRetry.json()).code, "decision_route_uncertain");
+  assert.equal(launches.length, beforeUncertain + 1, "uncertain routing must not start another turn automatically");
+});
+
 test("records interrupted turns without fabricating a Review Submission", async () => {
   const item = (await (await fetch(`${baseUrl}/api/work-items`, {
     method: "POST", headers: { "content-type": "application/json" },

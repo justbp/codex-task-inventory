@@ -12,6 +12,7 @@ import { createWorkItemRepository, initWorkItemSchema, migrateLegacyWork, WorkIt
 import { createWorkContextRepository, initWorkContextSchema } from "./work-context.mjs";
 import { createWorkRunLauncher } from "./work-run-launcher.mjs";
 import { createWorkReviewRepository, initWorkReviewSchema } from "./work-review.mjs";
+import { createWorkDecisionRepository, createWorkDecisionRouter, initWorkDecisionSchema } from "./work-decision.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SERVER_DIR, "..");
@@ -293,14 +294,17 @@ export function createTaskServer(options = {}) {
   initWorkItemSchema(db);
   initWorkContextSchema(db);
   initWorkReviewSchema(db);
+  initWorkDecisionSchema(db);
   const metadata = metadataRepository(db);
   const manual = manualRepository(db);
   const workItems = createWorkItemRepository(db);
   const workContext = createWorkContextRepository(db, workItems);
-  const workReview = createWorkReviewRepository(db, workItems);
+  const workDecisions = createWorkDecisionRepository(db, workItems);
+  const workReview = createWorkReviewRepository(db, workItems, workDecisions);
   migrateLegacyWork(db, workItems, monitor.list());
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
   const workRunLauncher = createWorkRunLauncher({ workItems, workContext, workReview, launcher });
+  const workDecisionRouter = createWorkDecisionRouter({ db, decisions: workDecisions, workItems, workReview, launcher });
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
   const notifier = options.notifier || new MacOSNotifier(options.notificationOptions);
   const distDir = resolve(options.distDir || DEFAULT_DIST);
@@ -421,6 +425,10 @@ export function createTaskServer(options = {}) {
       }
       const workItemReviewsMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/reviews$/i);
       if (workItemReviewsMatch && req.method === "GET") return json(res, 200, { reviews: workReview.list(workItemReviewsMatch[1]) });
+      const workItemDecisionRequestsMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/decision-requests$/i);
+      if (workItemDecisionRequestsMatch && req.method === "GET") {
+        return json(res, 200, { decisionRequests: workDecisions.listByWorkItem(workItemDecisionRequestsMatch[1]) });
+      }
       const workItemContextMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/context$/i);
       if (workItemContextMatch && req.method === "GET") return json(res, 200, { context: workContext.context(workItemContextMatch[1]) });
       const workItemEnvelopeMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/context-envelope$/i);
@@ -467,6 +475,32 @@ export function createTaskServer(options = {}) {
       }
       const runAuditMatch = url.pathname.match(/^\/api\/runs\/([0-9a-f-]+)\/audit$/i);
       if (runAuditMatch && req.method === "GET") return json(res, 200, { events: workItems.listAudit("run", runAuditMatch[1]) });
+      const runDecisionRequestsMatch = url.pathname.match(/^\/api\/runs\/([0-9a-f-]+)\/decision-requests$/i);
+      if (runDecisionRequestsMatch && req.method === "GET") {
+        return json(res, 200, { decisionRequests: workDecisions.listByRun(runDecisionRequestsMatch[1]) });
+      }
+      if (runDecisionRequestsMatch && req.method === "POST") {
+        const body = await parseBody(req);
+        const { idempotencyKey, ...input } = body;
+        const result = workDecisions.createRequest(runDecisionRequestsMatch[1], input, workItemAttribution(req), idempotencyKey);
+        return json(res, result.replayed ? 200 : 201, result);
+      }
+      const decisionAnswerMatch = url.pathname.match(/^\/api\/decision-requests\/([0-9a-f-]+)\/answer$/i);
+      if (decisionAnswerMatch && req.method === "POST") {
+        const body = await parseBody(req);
+        const result = await workDecisionRouter.answer(decisionAnswerMatch[1], body, workItemAttribution(req));
+        return json(res, result.replayed ? 200 : 201, result);
+      }
+      const decisionAuditMatch = url.pathname.match(/^\/api\/decision-requests\/([0-9a-f-]+)\/audit$/i);
+      if (decisionAuditMatch && req.method === "GET") {
+        return json(res, 200, { events: workDecisions.listAudit(decisionAuditMatch[1]) });
+      }
+      const decisionRequestMatch = url.pathname.match(/^\/api\/decision-requests\/([0-9a-f-]+)$/i);
+      if (decisionRequestMatch && req.method === "GET") {
+        const decisionRequest = workDecisions.get(decisionRequestMatch[1]);
+        if (!decisionRequest) throw new WorkItemError(404, "Decision Request 不存在", "decision_request_not_found");
+        return json(res, 200, { decisionRequest });
+      }
       const runMatch = url.pathname.match(/^\/api\/runs\/([0-9a-f-]+)$/i);
       if (runMatch && req.method === "GET") {
         const run = workItems.getRun(runMatch[1]);
