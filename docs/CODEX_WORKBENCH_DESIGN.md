@@ -368,7 +368,7 @@ Context Envelope 必须记录生成时间、Work Item version 和摘要来源。
 
 ### M2：实现上下文生成、暂停与恢复
 
-实施记录：`docs/M2_CONTEXT_RECOVERY.md`
+实施记录：`docs/M2_CONTEXT_RECOVERY.md`、`docs/M2_CODEX_EXECUTION_BRIDGE.md`
 
 **目标**
 
@@ -382,6 +382,7 @@ Context Envelope 必须记录生成时间、Work Item version 和摘要来源。
 - 启动 Run 时保存本次使用的 Context Envelope 快照。
 - 对不成熟任务执行 readiness 检查，并支持转换成只读探索 Run。
 - 暂停、阻塞和切换主线时生成并保存 Recovery Point。
+- 通过最小 API 幂等创建或恢复真实 Codex thread/turn，并把真实执行位置绑定到 Run。
 
 **验收条件**
 

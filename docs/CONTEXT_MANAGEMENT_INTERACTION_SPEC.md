@@ -317,7 +317,7 @@ reason: 无法确认修复字段是否影响后续校验
 | Decision、Recovery、关系、证据存储 | 已实现 API | M2 |
 | 暂停前强制 Recovery Point | 已实现 API | M2 |
 | 网页表单和操作按钮 | 未实现 | M4 任务详情；必要的执行入口可提前补齐 |
-| 自动创建真实 Codex thread 并发送 Envelope | 未实现 | M2 收口 / M3 前置 |
+| 自动创建或恢复真实 Codex thread 并发送 Envelope | 已实现 API | M2 收口 |
 | Codex 自动结构化回写 | 未实现 | M3 |
 | Decision Request 卡片与回答路由 | 未实现 | M3 |
 | Review Submission 和人工验收 | 未实现 | M3 |

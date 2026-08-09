@@ -44,6 +44,21 @@ function strings(value, field) {
   return value.map((item) => String(item).trim().slice(0, 2_000)).filter(Boolean).slice(0, 100);
 }
 
+export function buildContextEnvelopePrompt(envelope, { runId } = {}) {
+  return [
+    "你正在执行看板中的一个 Work Item。看板数据是工作任务的真相源，本次 Codex task 只是执行容器。",
+    `Run ID: ${runId || "未提供"}`,
+    `Context Envelope version: ${envelope.contextVersion}; Work Item version: ${envelope.workItem.version}`,
+    "以下 Context Envelope 是本次 Run 创建时冻结的完整任务上下文。只按其中的目标、范围、决定、约束和停止条件工作；不要从旧对话自行补全或扩大范围。",
+    "如果信息不足、触发停止条件或需要改变任务范围，请停止执行并在“需要用户决定”中明确提出，不要替用户作决定。",
+    "最终按 reportFormat 汇报，给出可核验的结果或引用；不要声称已把 Work Item 移到 done。",
+    "",
+    "<context-envelope>",
+    JSON.stringify(envelope, null, 2),
+    "</context-envelope>",
+  ].join("\n");
+}
+
 export function initWorkContextSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS work_item_decisions (

@@ -36,7 +36,10 @@ const launcher = {
   async listThreadNames() { return new Map(remoteNames); },
   async launch(input) {
     launches.push(input);
-    const id = "019fc79b-3541-7853-a09a-6bcd9ced9999";
+    if (input.prompt.includes("模拟启动失败")) throw new Error("fake launch failed before thread creation");
+    const id = input.threadId || `019fc79b-3541-7853-a09a-${String(launches.length).padStart(12, "0")}`;
+    await input.onThreadReady?.({ threadId: id, resumed: Boolean(input.threadId) });
+    if (input.prompt.includes("模拟不确定结果")) throw new Error("fake disconnect after thread creation");
     monitoredThreads.push({
       ...sample,
       id,
@@ -47,7 +50,7 @@ const launcher = {
       deepLink: `codex://threads/${id}`,
       activeTurnId: "turn-launched",
     });
-    return { threadId: id, turnId: "turn-launched", deepLink: `codex://threads/${id}` };
+    return { threadId: id, turnId: `turn-launched-${launches.length}`, resumed: Boolean(input.threadId), deepLink: `codex://threads/${id}` };
   },
   close() {},
 };
@@ -320,6 +323,101 @@ test("offers read-only exploration instead of starting an immature implementatio
   const exploration = (await explorationResponse.json()).run;
   assert.equal(exploration.mode, "explore");
   assert.match(exploration.contextEnvelope.scope.allowed, /只读探索/);
+});
+
+test("starts, resumes, and idempotently replays a Work Item through the Codex execution bridge", async () => {
+  const item = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({
+      idempotencyKey: "api-execution-item",
+      title: "执行桥测试",
+      goal: "让看板启动真实 Codex task",
+      nextAction: "执行最小验证",
+      acceptanceCriteria: ["Run 绑定 thread 与 turn"],
+      scope: { allowed: "只操作测试目录", excluded: "不修改生产数据" },
+      cwd: sandbox,
+      status: "ready",
+      stage: "execute",
+    }),
+  })).json()).workItem;
+
+  const before = launches.length;
+  const request = { idempotencyKey: "api-execution-start-one", expectedVersion: 1, mode: "implementation" };
+  const firstResponse = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json", "x-actor-id": "wangfei" }, body: JSON.stringify(request),
+  });
+  assert.equal(firstResponse.status, 201);
+  const first = await firstResponse.json();
+  assert.equal(first.run.launchState, "started");
+  assert.equal(first.run.status, "running");
+  assert.equal(first.run.contextWorkItemVersion, 1);
+  assert.ok(first.run.codexThreadId);
+  assert.ok(first.run.codexTurnId);
+  assert.match(launches.at(-1).prompt, /<context-envelope>/);
+  assert.match(launches.at(-1).prompt, /执行桥测试/);
+
+  const replayResponse = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json", "x-actor-id": "wangfei" }, body: JSON.stringify(request),
+  });
+  assert.equal(replayResponse.status, 200);
+  const replay = await replayResponse.json();
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.run.id, first.run.id);
+  assert.equal(launches.length, before + 1, "same idempotency key must not launch Codex twice");
+
+  const resumedResponse = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-execution-start-two", expectedVersion: 1 }),
+  });
+  assert.equal(resumedResponse.status, 201);
+  assert.equal((await resumedResponse.json()).resumed, true);
+  assert.equal(launches.at(-1).threadId, first.run.codexThreadId);
+
+  const newThreadResponse = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-execution-start-three", expectedVersion: 1, threadStrategy: "new" }),
+  });
+  assert.equal(newThreadResponse.status, 201);
+  assert.equal((await newThreadResponse.json()).resumed, false);
+  assert.equal(launches.at(-1).threadId, null);
+});
+
+test("persists failed and uncertain launches without automatically retrying them", async () => {
+  async function createFailureItem(key, title) {
+    return (await (await fetch(`${baseUrl}/api/work-items`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: key, title, cwd: sandbox }),
+    })).json()).workItem;
+  }
+
+  const failedItem = await createFailureItem("api-launch-failed-item", "模拟启动失败");
+  const failedRequest = { idempotencyKey: "api-launch-failed", expectedVersion: 1, mode: "explore" };
+  const beforeFailure = launches.length;
+  const failedResponse = await fetch(`${baseUrl}/api/work-items/${failedItem.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(failedRequest),
+  });
+  assert.equal(failedResponse.status, 502);
+  const failed = await failedResponse.json();
+  assert.equal(failed.code, "codex_launch_failed");
+  assert.equal(failed.details.run.launchState, "failed");
+  const failedReplay = await fetch(`${baseUrl}/api/work-items/${failedItem.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(failedRequest),
+  });
+  assert.equal(failedReplay.status, 200);
+  assert.equal((await failedReplay.json()).run.launchState, "failed");
+  assert.equal(launches.length, beforeFailure + 1);
+
+  const uncertainItem = await createFailureItem("api-launch-uncertain-item", "模拟不确定结果");
+  const uncertainResponse = await fetch(`${baseUrl}/api/work-items/${uncertainItem.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-launch-uncertain", expectedVersion: 1, mode: "explore" }),
+  });
+  assert.equal(uncertainResponse.status, 502);
+  const uncertain = await uncertainResponse.json();
+  assert.equal(uncertain.code, "codex_launch_uncertain");
+  assert.equal(uncertain.details.run.launchState, "uncertain");
+  assert.ok(uncertain.details.run.codexThreadId);
 });
 
 test("starts a manual task in Codex and replaces the manual card with its real thread", async () => {

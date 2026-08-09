@@ -16,12 +16,13 @@ export class CodexLauncher {
     const userHome = homedir();
     const userInstall = join(userHome, ".npm-global", "bin", "codex");
     this.command = options.command || process.env.CODEX_BIN || (existsSync(userInstall) ? userInstall : "codex");
-    this.env = { ...process.env, HOME: process.env.HOME || userHome, CODEX_HOME: process.env.CODEX_HOME || join(userHome, ".codex") };
+    this.commandArgs = options.commandArgs || [];
+    this.env = { ...process.env, ...options.env, HOME: process.env.HOME || userHome, CODEX_HOME: process.env.CODEX_HOME || join(userHome, ".codex") };
     this.children = new Set();
   }
 
   async withClient(run) {
-    const child = spawn(this.command, ["app-server", "--listen", "stdio://"], {
+    const child = spawn(this.command, [...this.commandArgs, "app-server", "--listen", "stdio://"], {
       env: this.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -101,8 +102,8 @@ export class CodexLauncher {
     });
   }
 
-  async launch({ cwd, prompt }) {
-    const child = spawn(this.command, ["app-server", "--listen", "stdio://"], {
+  async launch({ cwd, prompt, threadId: existingThreadId = null, onThreadReady }) {
+    const child = spawn(this.command, [...this.commandArgs, "app-server", "--listen", "stdio://"], {
       cwd,
       env: this.env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -167,23 +168,27 @@ export class CodexLauncher {
         clientInfo: { name: "codex_task_inventory", title: "Codex Task Inventory", version: "0.1.0" },
       });
       notify("initialized");
-      const started = await request("thread/start", {
-        cwd,
-        approvalPolicy: "on-request",
-        approvalsReviewer: "auto_review",
-        sandbox: "workspace-write",
-        serviceName: "codex_task_inventory",
-      });
+      const started = existingThreadId
+        ? await request("thread/resume", { threadId: existingThreadId })
+        : await request("thread/start", {
+          cwd,
+          approvalPolicy: "on-request",
+          approvalsReviewer: "auto_review",
+          sandbox: "workspace-write",
+          serviceName: "codex_task_inventory",
+        });
       const threadId = started?.thread?.id;
       if (!threadId) throw launchError("Codex 未返回 thread ID", stderr);
+      await onThreadReady?.({ threadId, resumed: Boolean(existingThreadId) });
       const turn = await request("turn/start", {
         threadId,
         input: [{ type: "text", text: prompt }],
+        cwd,
       });
       const turnId = turn?.turn?.id;
       if (!turnId) throw launchError("Codex 未返回 turn ID", stderr);
       settled = true;
-      return { threadId, turnId, deepLink: `codex://threads/${threadId}` };
+      return { threadId, turnId, resumed: Boolean(existingThreadId), deepLink: `codex://threads/${threadId}` };
     } catch (error) {
       stop();
       throw error;

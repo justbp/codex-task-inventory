@@ -10,6 +10,7 @@ import { MacOSNotifier } from "./macos-notifier.mjs";
 import { CodexQuotaReader } from "./codex-quota.mjs";
 import { createWorkItemRepository, initWorkItemSchema, migrateLegacyWork, WorkItemError } from "./work-items.mjs";
 import { createWorkContextRepository, initWorkContextSchema } from "./work-context.mjs";
+import { createWorkRunLauncher } from "./work-run-launcher.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SERVER_DIR, "..");
@@ -295,6 +296,7 @@ export function createTaskServer(options = {}) {
   const workContext = createWorkContextRepository(db, workItems);
   migrateLegacyWork(db, workItems, monitor.list());
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
+  const workRunLauncher = createWorkRunLauncher({ workItems, workContext, launcher });
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
   const notifier = options.notifier || new MacOSNotifier(options.notificationOptions);
   const distDir = resolve(options.distDir || DEFAULT_DIST);
@@ -382,11 +384,26 @@ export function createTaskServer(options = {}) {
         }
         return json(res, 201, { workItem: workItems.create(input, workItemAttribution(req), { idempotencyKey }) });
       }
+      const workItemStartMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/start$/i);
+      if (workItemStartMatch && req.method === "POST") {
+        const body = await parseBody(req);
+        if (!body.idempotencyKey || !String(body.idempotencyKey).trim()) {
+          throw new WorkItemError(400, "必须提供 idempotencyKey", "missing_idempotency_key");
+        }
+        if (!Number.isSafeInteger(body.expectedVersion) || body.expectedVersion < 1) {
+          throw new WorkItemError(400, "必须提供有效的 expectedVersion", "invalid_expected_version");
+        }
+        const result = await workRunLauncher.start(workItemStartMatch[1], body, workItemAttribution(req));
+        return json(res, result.replayed ? 200 : 201, result);
+      }
       const workItemRunsMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/runs$/i);
       if (workItemRunsMatch && req.method === "GET") return json(res, 200, { runs: workItems.listRuns(workItemRunsMatch[1]) });
       if (workItemRunsMatch && req.method === "POST") {
         const body = await parseBody(req);
         const { idempotencyKey, expectedVersion, ...input } = body;
+        if (["launchState", "launchError", "launchAttemptedAt", "threadStrategy"].some((field) => field in input)) {
+          throw new WorkItemError(400, "Codex 启动字段只能由执行桥维护", "launch_fields_are_system_managed");
+        }
         if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new WorkItemError(400, "必须提供有效的 expectedVersion", "invalid_expected_version");
         const contextEnvelope = workContext.buildEnvelope(workItemRunsMatch[1], { ...input, expectedVersion });
         return json(res, 201, { run: workItems.createRun(workItemRunsMatch[1], {

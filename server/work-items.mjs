@@ -5,6 +5,7 @@ export const WORK_STAGES = ["explore", "experiment", "execute", "verify"];
 export const RUN_STATUSES = ["queued", "running", "waiting", "completed", "interrupted", "failed", "canceled"];
 const PRIORITIES = ["low", "medium", "high"];
 const RUN_MODES = ["explore", "implementation"];
+const RUN_LAUNCH_STATES = ["not_requested", "pending", "launching", "started", "failed", "uncertain"];
 
 export class WorkItemError extends Error {
   constructor(status, message, code = "work_item_error") {
@@ -100,6 +101,10 @@ export function initWorkItemSchema(db) {
       expected_output TEXT NOT NULL DEFAULT '',
       context_envelope TEXT,
       context_work_item_version INTEGER,
+      launch_state TEXT NOT NULL DEFAULT 'not_requested',
+      launch_error TEXT,
+      launch_attempted_at TEXT,
+      launch_thread_strategy TEXT NOT NULL DEFAULT 'continue',
       version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -146,6 +151,10 @@ export function initWorkItemSchema(db) {
   addColumn("work_item_runs", runColumns, "expected_output", "TEXT NOT NULL DEFAULT ''");
   addColumn("work_item_runs", runColumns, "context_envelope", "TEXT");
   addColumn("work_item_runs", runColumns, "context_work_item_version", "INTEGER");
+  addColumn("work_item_runs", runColumns, "launch_state", "TEXT NOT NULL DEFAULT 'not_requested'");
+  addColumn("work_item_runs", runColumns, "launch_error", "TEXT");
+  addColumn("work_item_runs", runColumns, "launch_attempted_at", "TEXT");
+  addColumn("work_item_runs", runColumns, "launch_thread_strategy", "TEXT NOT NULL DEFAULT 'continue'");
 }
 
 function mapWorkItem(row) {
@@ -187,6 +196,10 @@ function mapRun(row) {
     expectedOutput: row.expected_output,
     contextEnvelope: row.context_envelope ? parseJson(row.context_envelope, null) : null,
     contextWorkItemVersion: row.context_work_item_version,
+    launchState: row.launch_state || "not_requested",
+    launchError: row.launch_error,
+    launchAttemptedAt: row.launch_attempted_at,
+    threadStrategy: row.launch_thread_strategy || "continue",
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -293,6 +306,14 @@ function normalizeRun(input, current = {}) {
   if (input.contextEnvelope !== undefined) next.contextEnvelope = input.contextEnvelope;
   if (input.contextWorkItemVersion !== undefined) next.contextWorkItemVersion = input.contextWorkItemVersion;
   if (input.expectedWorkItemVersion !== undefined) next.expectedWorkItemVersion = input.expectedWorkItemVersion;
+  if (input.launchState !== undefined) {
+    if (!RUN_LAUNCH_STATES.includes(input.launchState)) throw new WorkItemError(400, "无效的启动状态", "invalid_launch_state");
+    next.launchState = input.launchState;
+  }
+  if (input.threadStrategy !== undefined) {
+    if (!["continue", "new"].includes(input.threadStrategy)) throw new WorkItemError(400, "threadStrategy 只能是 continue 或 new", "invalid_thread_strategy");
+    next.threadStrategy = input.threadStrategy;
+  }
   next.status ??= "queued";
   next.objective ??= "";
   next.codexThreadId ??= null;
@@ -302,6 +323,8 @@ function normalizeRun(input, current = {}) {
   next.contextEnvelope ??= null;
   next.contextWorkItemVersion ??= null;
   next.expectedWorkItemVersion ??= null;
+  next.launchState ??= "not_requested";
+  next.threadStrategy ??= "continue";
   return next;
 }
 
@@ -327,9 +350,13 @@ export function createWorkItemRepository(db) {
   const findRunByThread = db.prepare("SELECT * FROM work_item_runs WHERE codex_thread_id=? ORDER BY created_at LIMIT 1");
   const listRuns = db.prepare("SELECT * FROM work_item_runs WHERE work_item_id=? ORDER BY rowid");
   const insertRun = db.prepare(`INSERT INTO work_item_runs
-    (id,work_item_id,status,objective,codex_thread_id,codex_turn_id,run_mode,expected_output,context_envelope,context_work_item_version,version,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    (id,work_item_id,status,objective,codex_thread_id,codex_turn_id,run_mode,expected_output,context_envelope,context_work_item_version,launch_state,launch_thread_strategy,version,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   const updateRun = db.prepare(`UPDATE work_item_runs SET status=?,objective=?,codex_thread_id=?,codex_turn_id=?,run_mode=?,expected_output=?,version=?,updated_at=?
+    WHERE id=? AND version=?`);
+  const claimRunLaunch = db.prepare(`UPDATE work_item_runs SET launch_state='launching',launch_error=NULL,launch_attempted_at=?,version=version+1,updated_at=?
+    WHERE id=? AND version=? AND launch_state='pending'`);
+  const updateRunLaunch = db.prepare(`UPDATE work_item_runs SET status=?,codex_thread_id=?,codex_turn_id=?,launch_state=?,launch_error=?,version=version+1,updated_at=?
     WHERE id=? AND version=?`);
   const insertAudit = db.prepare(`INSERT INTO work_item_audit_events
     (id,entity_type,entity_id,action,actor_type,actor_id,codex_thread_id,before_version,after_version,before_json,after_json,created_at)
@@ -426,7 +453,7 @@ export function createWorkItemRepository(db) {
       insertRun.run(
         id, workItemId, normalized.status, normalized.objective, normalized.codexThreadId, normalized.codexTurnId,
         normalized.mode, normalized.expectedOutput, normalized.contextEnvelope ? JSON.stringify(normalized.contextEnvelope) : null,
-        normalized.contextWorkItemVersion, 1, createdAt, createdAt,
+        normalized.contextWorkItemVersion, normalized.launchState, normalized.threadStrategy, 1, createdAt, createdAt,
       );
       const created = mapRun(findRun.get(id));
       audit("run", id, "create", attribution, null, created);
@@ -436,7 +463,7 @@ export function createWorkItemRepository(db) {
 
   function updateExistingRun(id, expectedVersion, change, attributionInput = {}) {
     assertExpectedVersion(expectedVersion);
-    if (["mode", "expectedOutput", "contextEnvelope", "contextWorkItemVersion", "expectedWorkItemVersion"].some((field) => field in change)) {
+    if (["mode", "expectedOutput", "contextEnvelope", "contextWorkItemVersion", "expectedWorkItemVersion", "launchState", "launchError", "launchAttemptedAt", "threadStrategy"].some((field) => field in change)) {
       throw new WorkItemError(409, "Run 的上下文范围和快照创建后不可修改", "context_snapshot_immutable");
     }
     const attribution = normalizedAttribution(attributionInput);
@@ -455,6 +482,47 @@ export function createWorkItemRepository(db) {
     });
   }
 
+  function claimLaunch(id, expectedVersion, attributionInput = {}) {
+    assertExpectedVersion(expectedVersion);
+    return transaction(db, () => {
+      const row = findRun.get(id);
+      if (!row) throw new WorkItemError(404, "运行记录不存在", "run_not_found");
+      const current = mapRun(row);
+      if (current.version !== expectedVersion) throw new WorkItemError(409, "运行记录已被其他操作修改，请重新读取", "version_conflict");
+      if (current.launchState !== "pending") throw new WorkItemError(409, "该 Run 已经启动或正在启动", "run_launch_not_pending");
+      const timestamp = now();
+      const result = claimRunLaunch.run(timestamp, timestamp, id, expectedVersion);
+      if (Number(result.changes) !== 1) throw new WorkItemError(409, "该 Run 已经启动或正在启动", "run_launch_not_pending");
+      const updated = mapRun(findRun.get(id));
+      audit("run", id, "launch_claim", attributionInput, current, updated);
+      return updated;
+    });
+  }
+
+  function recordLaunch(id, expectedVersion, change, attributionInput = {}) {
+    assertExpectedVersion(expectedVersion);
+    return transaction(db, () => {
+      const row = findRun.get(id);
+      if (!row) throw new WorkItemError(404, "运行记录不存在", "run_not_found");
+      const current = mapRun(row);
+      if (current.version !== expectedVersion) throw new WorkItemError(409, "运行记录已被其他操作修改，请重新读取", "version_conflict");
+      const launchState = change.launchState;
+      if (!RUN_LAUNCH_STATES.includes(launchState) || !["started", "failed", "uncertain", "launching"].includes(launchState)) {
+        throw new WorkItemError(400, "无效的启动状态", "invalid_launch_state");
+      }
+      const status = change.status || current.status;
+      if (!RUN_STATUSES.includes(status)) throw new WorkItemError(400, "无效的运行状态", "invalid_run_status");
+      const threadId = change.codexThreadId === undefined ? current.codexThreadId : change.codexThreadId;
+      const turnId = change.codexTurnId === undefined ? current.codexTurnId : change.codexTurnId;
+      const launchError = change.launchError ? String(change.launchError).slice(0, 4000) : null;
+      const result = updateRunLaunch.run(status, threadId, turnId, launchState, launchError, now(), id, expectedVersion);
+      if (Number(result.changes) !== 1) throw new WorkItemError(409, "运行记录已被其他操作修改，请重新读取", "version_conflict");
+      const updated = mapRun(findRun.get(id));
+      audit("run", id, `launch_${launchState}`, attributionInput, current, updated);
+      return updated;
+    });
+  }
+
   return {
     list() { return listWorkItems.all().map(mapWorkItem); },
     get(id) { const row = findWorkItem.get(id); return row ? mapWorkItem(row) : null; },
@@ -469,6 +537,8 @@ export function createWorkItemRepository(db) {
     getRunByThread(threadId) { const row = findRunByThread.get(threadId); return row ? mapRun(row) : null; },
     createRun,
     updateRun: updateExistingRun,
+    claimLaunch,
+    recordLaunch,
     listAudit(entityType, entityId) { return listAudit.all(entityType, entityId).map(mapAudit); },
     importWorkItem(input, source, attribution = { actorType: "system", actorId: "legacy-migration" }) {
       const existing = this.getBySource(source.kind, source.id);

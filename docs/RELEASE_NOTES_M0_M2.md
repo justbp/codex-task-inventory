@@ -141,20 +141,28 @@ SQLite 不保存完整 Codex 对话、推理过程、全量终端输出、完整
 - 独立临时 Codex 不读取当前聊天，仅靠仓库文档成功恢复上下文管理设计。
 - 现有任务看板的 M0 行为全部通过回归。
 
-## 11. 当前尚未提供
+## 11. M2 收口补充
+
+- 新增 `POST /api/work-items/:id/start`，可从冻结 Context Envelope 启动真实 Codex thread/turn。
+- 同一 Work Item 默认继续最近的主对话，也可明确选择新对话；无论选择哪种方式都创建独立 Run。
+- Run 保存真实 thread/turn 绑定及 `launchState`，相同幂等请求不会重复启动。
+- 已获得 thread 后通信中断会记录为 `uncertain`，不会自动重试制造重复任务。
+- 本能力目前为 API 入口，现有看板页面不变。
+
+## 12. 当前尚未提供
 
 以下内容属于后续里程碑，不能视为本次已经上线：
 
 - Work Item 上下文的网页表单和任务详情页面。
 - “开始探索”“开始执行”“暂停”和“恢复”按钮。
-- 自动创建真实 Codex thread 并发送 Context Envelope。
+- Work Item 的网页“开始/恢复”按钮（真实启动能力已提供 API）。
 - Codex 自动结构化回写进展、决定请求和验收报告。
 - Decision Request 卡片及回答到原 Run 的路由。
 - Review Submission 与人工验收闭环。
 - 今日工作台。
 - 看板管家 AI、自动安排、提醒和复盘。
 
-## 12. 产品不变量
+## 13. 产品不变量
 
 本次版本保护 `I-01` 至 `I-15`，重点包括：
 
