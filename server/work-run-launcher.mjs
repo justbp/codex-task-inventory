@@ -15,7 +15,7 @@ function previousThread(workItems, workItemId, currentRunId) {
     .at(-1)?.codexThreadId || null;
 }
 
-export function createWorkRunLauncher({ workItems, workContext, workReview, launcher }) {
+export function createWorkRunLauncher({ workItems, workContext, workReview, launcher, wipPolicy }) {
   async function start(workItemId, input = {}, attribution = {}) {
     const item = workItems.get(workItemId);
     if (!item) throw new WorkItemError(404, "工作任务不存在", "work_item_not_found");
@@ -32,6 +32,7 @@ export function createWorkRunLauncher({ workItems, workContext, workReview, laun
       objective: input.objective,
       expectedOutput: input.expectedOutput,
     });
+    let wipWarnings = [];
     const created = workItems.createRun(workItemId, {
       status: "queued",
       objective: envelope.run.objective,
@@ -42,7 +43,11 @@ export function createWorkRunLauncher({ workItems, workContext, workReview, laun
       expectedWorkItemVersion: input.expectedVersion,
       launchState: "pending",
       threadStrategy,
-    }, attribution, input.idempotencyKey);
+    }, attribution, input.idempotencyKey, {
+      beforeCreate() {
+        wipWarnings = wipPolicy?.checkRunStart().warnings || [];
+      },
+    });
 
     let run = workItems.getRun(created.id);
     if (run.launchState !== "pending") {
@@ -50,6 +55,7 @@ export function createWorkRunLauncher({ workItems, workContext, workReview, laun
         run,
         launched: run.launchState === "started",
         replayed: true,
+        wipWarnings: [],
         deepLink: run.codexThreadId ? `codex://threads/${run.codexThreadId}` : null,
       };
     }
@@ -81,7 +87,7 @@ export function createWorkRunLauncher({ workItems, workContext, workReview, laun
         onLifecycleError: (error) => console.error(`Run ${run.id} lifecycle synchronization failed`, error),
       });
       run = workItems.getRun(run.id);
-      return { run, launched: true, replayed: false, resumed: result.resumed, deepLink: result.deepLink };
+      return { run, launched: true, replayed: false, resumed: result.resumed, deepLink: result.deepLink, wipWarnings };
     } catch (error) {
       const current = workItems.getRun(run.id);
       const uncertain = Boolean(boundThreadId || current.codexThreadId);

@@ -66,8 +66,14 @@ test("ships the unchanged Run board and a separate Work Item today workspace", a
   assert.match(todayWorkspace, /expectedVersion: item\.version, todayFocus/);
   assert.match(todayWorkspace, /\["ready", "active", "blocked"\]\.includes\(item\.status\)/);
   assert.match(todayWorkspace, /由你选择，Codex 不会自动改变计划/);
+  assert.match(todayWorkspace, /\/api\/wip-policy/);
+  assert.match(todayWorkspace, /达到上限后阻止新增/);
+  assert.match(todayWorkspace, /约束同时推进的工作数量，不决定业务优先级/);
+  assert.match(todayWorkspace, /expectedVersion: wipPolicy\.version/);
   assert.doesNotMatch(todayWorkspace, /\/api\/threads/);
   assert.match(styles, /\.today-board/);
+  assert.match(styles, /\.wip-policy-bar/);
+  assert.match(styles, /\.wip-settings/);
   assert.match(workspace, /打开工作详情/);
   assert.match(workspace, /\/today\?workItem=\$\{thread\.workItemId\}/);
   assert.match(todayWorkspace, /WorkItemDetailDrawer/);

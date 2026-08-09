@@ -296,6 +296,100 @@ test("lets only the user select a versioned today mainline", async () => {
   assert.equal((await (await fetch(`${baseUrl}/api/work-items/${created.id}`)).json()).workItem.todayFocus, true);
 });
 
+test("warns or blocks new focus and Run work with a versioned WIP policy", async () => {
+  const initial = await (await fetch(`${baseUrl}/api/wip-policy`)).json();
+  assert.deepEqual({
+    mainlineLimit: initial.policy.mainlineLimit,
+    backgroundRunLimit: initial.policy.backgroundRunLimit,
+    reviewLimit: initial.policy.reviewLimit,
+    enforcement: initial.policy.enforcement,
+  }, { mainlineLimit: 1, backgroundRunLimit: 2, reviewLimit: 2, enforcement: "warn" });
+
+  const blockedResponse = await fetch(`${baseUrl}/api/wip-policy`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({
+      expectedVersion: initial.policy.version,
+      mainlineLimit: initial.snapshot.counts.mainline,
+      backgroundRunLimit: initial.snapshot.counts.backgroundRuns,
+      reviewLimit: 99,
+      enforcement: "block",
+    }),
+  });
+  assert.equal(blockedResponse.status, 200);
+  const blockedPolicy = (await blockedResponse.json()).policy;
+
+  const item = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "wip-integration-item", title: "WIP 集成测试", goal: "验证启动限制", nextAction: "启动测试 Run", acceptanceCriteria: ["限制生效"], scope: { allowed: "仅操作测试数据库", excluded: "不操作外部系统" }, cwd: sandbox, status: "ready" }),
+  })).json()).workItem;
+
+  const focusResponse = await fetch(`${baseUrl}/api/work-items/${item.id}`, {
+    method: "PATCH", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedVersion: item.version, todayFocus: true }),
+  });
+  assert.equal(focusResponse.status, 409);
+  assert.equal((await focusResponse.json()).code, "wip_limit_exceeded");
+
+  const staleFocusResponse = await fetch(`${baseUrl}/api/work-items/${item.id}`, {
+    method: "PATCH", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedVersion: item.version + 1, todayFocus: true }),
+  });
+  assert.equal(staleFocusResponse.status, 409);
+  assert.equal((await staleFocusResponse.json()).code, "version_conflict", "version conflicts take precedence over WIP evaluation");
+
+  const launchesBeforeBlock = launches.length;
+  const startRequest = { idempotencyKey: "wip-integration-start", expectedVersion: item.version };
+  const blockedStart = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(startRequest),
+  });
+  assert.equal(blockedStart.status, 409);
+  assert.equal((await blockedStart.json()).code, "wip_limit_exceeded");
+  assert.equal(launches.length, launchesBeforeBlock);
+  assert.deepEqual((await (await fetch(`${baseUrl}/api/work-items/${item.id}/runs`)).json()).runs, []);
+
+  const codexPatch = await fetch(`${baseUrl}/api/wip-policy`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-actor-type": "codex", "x-actor-id": "manager", "x-codex-thread-id": "manager-thread" },
+    body: JSON.stringify({ expectedVersion: blockedPolicy.version, enforcement: "warn" }),
+  });
+  assert.equal(codexPatch.status, 403);
+  assert.equal((await codexPatch.json()).code, "user_confirmation_required");
+
+  const warnedResponse = await fetch(`${baseUrl}/api/wip-policy`, {
+    method: "PATCH", headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ expectedVersion: blockedPolicy.version, enforcement: "warn" }),
+  });
+  assert.equal(warnedResponse.status, 200);
+  const warnedPolicy = (await warnedResponse.json()).policy;
+
+  const warnedStart = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(startRequest),
+  });
+  assert.equal(warnedStart.status, 201);
+  const warned = await warnedStart.json();
+  assert.equal(warned.wipWarnings.some((warning) => warning.lane === "backgroundRuns"), true);
+  const launchesAfterFirstStart = launches.length;
+
+  const replay = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(startRequest),
+  });
+  assert.equal(replay.status, 200);
+  assert.equal(launches.length, launchesAfterFirstStart, "WIP check must not break idempotent start replay");
+  assert.deepEqual((await replay.json()).wipWarnings, []);
+
+  const audit = await (await fetch(`${baseUrl}/api/wip-policy/audit`)).json();
+  assert.deepEqual(audit.events.map((event) => [event.actorType, event.actorId, event.beforeVersion, event.afterVersion]), [
+    ["user", "wangfei", 1, 2], ["user", "wangfei", 2, 3],
+  ]);
+
+  const restored = await fetch(`${baseUrl}/api/wip-policy`, {
+    method: "PATCH", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedVersion: warnedPolicy.version, mainlineLimit: 99, backgroundRunLimit: 99, reviewLimit: 99, enforcement: "warn" }),
+  });
+  assert.equal(restored.status, 200);
+});
+
 test("serves one attributable Work Item detail aggregate without copying thread history", async () => {
   const created = (await (await fetch(`${baseUrl}/api/work-items`, {
     method: "POST",

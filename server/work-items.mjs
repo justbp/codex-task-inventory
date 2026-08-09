@@ -456,7 +456,7 @@ export function createWorkItemRepository(db) {
     });
   }
 
-  function createRun(workItemId, input, attributionInput = {}, idempotencyKey) {
+  function createRun(workItemId, input, attributionInput = {}, idempotencyKey, options = {}) {
     const attribution = normalizedAttribution(attributionInput);
     const normalized = normalizeRun(input);
     const idempotencyRequest = {
@@ -464,6 +464,7 @@ export function createWorkItemRepository(db) {
       contextEnvelope: normalized.contextEnvelope ? { ...normalized.contextEnvelope, generatedAt: null } : null,
     };
     return idempotent(`run.create:${workItemId}`, idempotencyKey, idempotencyRequest, () => {
+      options.beforeCreate?.();
       const workItemRow = findWorkItem.get(workItemId);
       if (!workItemRow) throw new WorkItemError(404, "工作任务不存在", "work_item_not_found");
       if (normalized.expectedWorkItemVersion !== null && workItemRow.version !== normalized.expectedWorkItemVersion) {

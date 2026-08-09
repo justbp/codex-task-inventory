@@ -117,6 +117,22 @@ export type WorkItemDetail = {
   reviewActions: ReviewAction[];
 };
 
+export type WipPolicy = {
+  id: "default";
+  mainlineLimit: number;
+  backgroundRunLimit: number;
+  reviewLimit: number;
+  enforcement: "warn" | "block";
+  version: number;
+  updatedAt: string;
+};
+
+export type WipLaneSnapshot = { count: number; limit: number; atLimit: boolean; exceeded: boolean };
+export type WipSnapshot = {
+  counts: { mainline: number; backgroundRuns: number; review: number };
+  lanes: { mainline: WipLaneSnapshot; backgroundRuns: WipLaneSnapshot; review: WipLaneSnapshot };
+};
+
 export type CodexQuotaWindow = {
   usedPercent: number | null;
   remainingPercent: number | null;

@@ -14,6 +14,7 @@ import { createWorkRunLauncher } from "./work-run-launcher.mjs";
 import { createWorkReviewRepository, initWorkReviewSchema } from "./work-review.mjs";
 import { createWorkDecisionRepository, createWorkDecisionRouter, initWorkDecisionSchema } from "./work-decision.mjs";
 import { createWorkReviewActionService, initWorkReviewActionSchema } from "./work-review-action.mjs";
+import { createWipPolicyRepository, initWipPolicySchema } from "./wip-policy.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SERVER_DIR, "..");
@@ -297,15 +298,17 @@ export function createTaskServer(options = {}) {
   initWorkReviewSchema(db);
   initWorkDecisionSchema(db);
   initWorkReviewActionSchema(db);
+  initWipPolicySchema(db);
   const metadata = metadataRepository(db);
   const manual = manualRepository(db);
   const workItems = createWorkItemRepository(db);
+  const wipPolicy = createWipPolicyRepository(db);
   const workContext = createWorkContextRepository(db, workItems);
   const workDecisions = createWorkDecisionRepository(db, workItems);
   const workReview = createWorkReviewRepository(db, workItems, workDecisions);
   migrateLegacyWork(db, workItems, monitor.list());
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
-  const workRunLauncher = createWorkRunLauncher({ workItems, workContext, workReview, launcher });
+  const workRunLauncher = createWorkRunLauncher({ workItems, workContext, workReview, launcher, wipPolicy });
   const workDecisionRouter = createWorkDecisionRouter({ db, decisions: workDecisions, workItems, workReview, launcher });
   const workReviewActions = createWorkReviewActionService({ db, workItems, workContext, workReview, workRunLauncher });
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
@@ -380,6 +383,18 @@ export function createTaskServer(options = {}) {
         const result = await notifier.notify({ title: "Codex Task Monitor", subtitle: "macOS 通知测试", body: "通知已开启，任务进入待 Review 时会提醒你。" });
         if (!result.delivered) throw new ApiError(503, result.reason || "系统通知发送失败");
         return json(res, 200, result);
+      }
+      if (url.pathname === "/api/wip-policy" && req.method === "GET") {
+        return json(res, 200, { policy: wipPolicy.get(), snapshot: wipPolicy.snapshot() });
+      }
+      if (url.pathname === "/api/wip-policy" && req.method === "PATCH") {
+        const body = await parseBody(req);
+        const { expectedVersion, ...change } = body;
+        const policy = wipPolicy.patch(expectedVersion, change, workItemAttribution(req));
+        return json(res, 200, { policy, snapshot: wipPolicy.snapshot() });
+      }
+      if (url.pathname === "/api/wip-policy/audit" && req.method === "GET") {
+        return json(res, 200, { events: wipPolicy.listAudit() });
       }
       if (url.pathname === "/api/threads" && req.method === "GET") {
         workReview.reconcileMonitoredThreads(monitor.list());
@@ -494,7 +509,12 @@ export function createTaskServer(options = {}) {
         if (["blocked", "parked"].includes(change.status)) throw new WorkItemError(409, "暂停或阻塞任务前必须创建 Recovery Point", "recovery_point_required");
         const actor = workItemAttribution(req);
         if (actor.actorType === "codex" && change.status !== undefined) throw new WorkItemError(403, "Codex 改变 Work Status 需要用户确认", "user_confirmation_required");
-        return json(res, 200, { workItem: workItems.update(workItemMatch[1], expectedVersion, change, actor) });
+        const current = workItems.get(workItemMatch[1]);
+        if (!current) throw new WorkItemError(404, "工作任务不存在", "work_item_not_found");
+        if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new WorkItemError(400, "必须提供有效的 expectedVersion", "invalid_expected_version");
+        if (current.version !== expectedVersion) throw new WorkItemError(409, "工作任务已被其他操作修改，请重新读取", "version_conflict");
+        const wip = change.todayFocus === true && !current.todayFocus ? wipPolicy.checkMainlineAddition() : { warnings: [] };
+        return json(res, 200, { workItem: workItems.update(workItemMatch[1], expectedVersion, change, actor), wipWarnings: wip.warnings });
       }
       const runAuditMatch = url.pathname.match(/^\/api\/runs\/([0-9a-f-]+)\/audit$/i);
       if (runAuditMatch && req.method === "GET") return json(res, 200, { events: workItems.listAudit("run", runAuditMatch[1]) });
@@ -571,11 +591,12 @@ export function createTaskServer(options = {}) {
         if (!task.cwd) throw new ApiError(400, "请先填写工作目录");
         const cwd = resolve(task.cwd);
         if (!isAbsolute(task.cwd) || !existsSync(cwd) || !statSync(cwd).isDirectory()) throw new ApiError(400, "工作目录必须是存在的绝对路径");
+        const wip = wipPolicy.checkRunStart();
         const launched = await launcher.launch({ cwd, prompt: buildTaskPrompt(task) });
         metadata.createFromManual(launched.threadId, task);
         manual.patch(task.id, { codexThreadId: launched.threadId });
         publishIfChanged();
-        return json(res, 200, launched);
+        return json(res, 200, { ...launched, wipWarnings: wip.warnings });
       }
       const itemMatch = url.pathname.match(/^\/api\/items\/([0-9a-f-]+)$/i);
       if (itemMatch && req.method === "PATCH") return json(res, 200, { item: manual.patch(itemMatch[1], await parseBody(req)) });
