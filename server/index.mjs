@@ -11,6 +11,7 @@ import { CodexQuotaReader } from "./codex-quota.mjs";
 import { createWorkItemRepository, initWorkItemSchema, migrateLegacyWork, WorkItemError } from "./work-items.mjs";
 import { createWorkContextRepository, initWorkContextSchema } from "./work-context.mjs";
 import { createWorkRunLauncher } from "./work-run-launcher.mjs";
+import { createWorkReviewRepository, initWorkReviewSchema } from "./work-review.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SERVER_DIR, "..");
@@ -243,9 +244,10 @@ export function effectiveLane(thread, meta) {
 
 function createSnapshot(monitor, metadata, threadNames = new Map(), { includeHidden = false } = {}) {
   return monitor.list().map((thread) => {
-    const meta = metadata.ensure(thread);
+    const { terminalTurns: _terminalTurns, ...visibleThread } = thread;
+    const meta = metadata.ensure(visibleThread);
     const syncedName = threadNames.get(thread.id);
-    return { ...thread, ...(syncedName ? { title: syncedName } : {}), kind: "codex", ...meta, project: meta.projectOverride || thread.project, lane: effectiveLane(thread, meta) };
+    return { ...visibleThread, ...(syncedName ? { title: syncedName } : {}), kind: "codex", ...meta, project: meta.projectOverride || visibleThread.project, lane: effectiveLane(visibleThread, meta) };
   }).filter((thread) => (includeHidden || !thread.hidden) && ["in_progress", "review", "completed"].includes(thread.lane));
 }
 
@@ -290,13 +292,15 @@ export function createTaskServer(options = {}) {
   initMetadata(db);
   initWorkItemSchema(db);
   initWorkContextSchema(db);
+  initWorkReviewSchema(db);
   const metadata = metadataRepository(db);
   const manual = manualRepository(db);
   const workItems = createWorkItemRepository(db);
   const workContext = createWorkContextRepository(db, workItems);
+  const workReview = createWorkReviewRepository(db, workItems);
   migrateLegacyWork(db, workItems, monitor.list());
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
-  const workRunLauncher = createWorkRunLauncher({ workItems, workContext, launcher });
+  const workRunLauncher = createWorkRunLauncher({ workItems, workContext, workReview, launcher });
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
   const notifier = options.notifier || new MacOSNotifier(options.notificationOptions);
   const distDir = resolve(options.distDir || DEFAULT_DIST);
@@ -329,6 +333,7 @@ export function createTaskServer(options = {}) {
   };
   const publishOnce = async () => {
     try {
+      workReview.reconcileMonitoredThreads(monitor.list());
       const codexThreads = createSnapshot(monitor, metadata);
       await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
       const threads = [...manual.list(), ...applyThreadNames(codexThreads, threadNames)];
@@ -370,6 +375,7 @@ export function createTaskServer(options = {}) {
         return json(res, 200, result);
       }
       if (url.pathname === "/api/threads" && req.method === "GET") {
+        workReview.reconcileMonitoredThreads(monitor.list());
         const codexThreads = createSnapshot(monitor, metadata, new Map(), { includeHidden: url.searchParams.get("hidden") === "1" });
         await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
         return json(res, 200, { threads: [...manual.list(), ...applyThreadNames(codexThreads, threadNames)] });
@@ -413,6 +419,8 @@ export function createTaskServer(options = {}) {
           contextWorkItemVersion: contextEnvelope.workItem.version,
         }, workItemAttribution(req), idempotencyKey) });
       }
+      const workItemReviewsMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/reviews$/i);
+      if (workItemReviewsMatch && req.method === "GET") return json(res, 200, { reviews: workReview.list(workItemReviewsMatch[1]) });
       const workItemContextMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/context$/i);
       if (workItemContextMatch && req.method === "GET") return json(res, 200, { context: workContext.context(workItemContextMatch[1]) });
       const workItemEnvelopeMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/context-envelope$/i);
@@ -469,6 +477,12 @@ export function createTaskServer(options = {}) {
         const body = await parseBody(req);
         const { expectedVersion, ...change } = body;
         return json(res, 200, { run: workItems.updateRun(runMatch[1], expectedVersion, change, workItemAttribution(req)) });
+      }
+      const runReviewMatch = url.pathname.match(/^\/api\/runs\/([0-9a-f-]+)\/review$/i);
+      if (runReviewMatch && req.method === "GET") {
+        const review = workReview.getByRun(runReviewMatch[1]);
+        if (!review) throw new WorkItemError(404, "验收提交不存在", "review_submission_not_found");
+        return json(res, 200, { review });
       }
       if (url.pathname === "/api/items" && req.method === "POST") return json(res, 201, { item: manual.create(await parseBody(req)) });
       if (url.pathname === "/api/items/batch" && req.method === "POST") {

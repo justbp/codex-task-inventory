@@ -105,6 +105,9 @@ export function initWorkItemSchema(db) {
       launch_error TEXT,
       launch_attempted_at TEXT,
       launch_thread_strategy TEXT NOT NULL DEFAULT 'continue',
+      terminal_event_key TEXT,
+      terminal_at TEXT,
+      terminal_error TEXT,
       version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -155,6 +158,10 @@ export function initWorkItemSchema(db) {
   addColumn("work_item_runs", runColumns, "launch_error", "TEXT");
   addColumn("work_item_runs", runColumns, "launch_attempted_at", "TEXT");
   addColumn("work_item_runs", runColumns, "launch_thread_strategy", "TEXT NOT NULL DEFAULT 'continue'");
+  addColumn("work_item_runs", runColumns, "terminal_event_key", "TEXT");
+  addColumn("work_item_runs", runColumns, "terminal_at", "TEXT");
+  addColumn("work_item_runs", runColumns, "terminal_error", "TEXT");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_runs_terminal_event ON work_item_runs(terminal_event_key) WHERE terminal_event_key IS NOT NULL");
 }
 
 function mapWorkItem(row) {
@@ -200,6 +207,9 @@ function mapRun(row) {
     launchError: row.launch_error,
     launchAttemptedAt: row.launch_attempted_at,
     threadStrategy: row.launch_thread_strategy || "continue",
+    terminalEventKey: row.terminal_event_key,
+    terminalAt: row.terminal_at,
+    terminalError: row.terminal_error,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -348,6 +358,7 @@ export function createWorkItemRepository(db) {
     WHERE id=? AND version=?`);
   const findRun = db.prepare("SELECT * FROM work_item_runs WHERE id=?");
   const findRunByThread = db.prepare("SELECT * FROM work_item_runs WHERE codex_thread_id=? ORDER BY created_at LIMIT 1");
+  const findRunByTurn = db.prepare("SELECT * FROM work_item_runs WHERE codex_thread_id=? AND codex_turn_id=? ORDER BY rowid DESC LIMIT 1");
   const listRuns = db.prepare("SELECT * FROM work_item_runs WHERE work_item_id=? ORDER BY rowid");
   const insertRun = db.prepare(`INSERT INTO work_item_runs
     (id,work_item_id,status,objective,codex_thread_id,codex_turn_id,run_mode,expected_output,context_envelope,context_work_item_version,launch_state,launch_thread_strategy,version,created_at,updated_at)
@@ -358,6 +369,8 @@ export function createWorkItemRepository(db) {
     WHERE id=? AND version=? AND launch_state='pending'`);
   const updateRunLaunch = db.prepare(`UPDATE work_item_runs SET status=?,codex_thread_id=?,codex_turn_id=?,launch_state=?,launch_error=?,version=version+1,updated_at=?
     WHERE id=? AND version=?`);
+  const updateRunTerminal = db.prepare(`UPDATE work_item_runs SET status=?,terminal_event_key=?,terminal_at=?,terminal_error=?,version=version+1,updated_at=?
+    WHERE id=? AND version=? AND terminal_event_key IS NULL`);
   const insertAudit = db.prepare(`INSERT INTO work_item_audit_events
     (id,entity_type,entity_id,action,actor_type,actor_id,codex_thread_id,before_version,after_version,before_json,after_json,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
@@ -463,7 +476,7 @@ export function createWorkItemRepository(db) {
 
   function updateExistingRun(id, expectedVersion, change, attributionInput = {}) {
     assertExpectedVersion(expectedVersion);
-    if (["mode", "expectedOutput", "contextEnvelope", "contextWorkItemVersion", "expectedWorkItemVersion", "launchState", "launchError", "launchAttemptedAt", "threadStrategy"].some((field) => field in change)) {
+    if (["mode", "expectedOutput", "contextEnvelope", "contextWorkItemVersion", "expectedWorkItemVersion", "launchState", "launchError", "launchAttemptedAt", "threadStrategy", "terminalEventKey", "terminalAt", "terminalError"].some((field) => field in change)) {
       throw new WorkItemError(409, "Run 的上下文范围和快照创建后不可修改", "context_snapshot_immutable");
     }
     const attribution = normalizedAttribution(attributionInput);
@@ -523,6 +536,33 @@ export function createWorkItemRepository(db) {
     });
   }
 
+  function recordTerminal(id, event, attributionInput = { actorType: "system", actorId: "codex-turn-listener" }) {
+    const eventKey = String(event.eventKey || "").trim().slice(0, 500);
+    if (!eventKey) throw new WorkItemError(400, "完成事件缺少 eventKey", "missing_terminal_event_key");
+    if (!["completed", "interrupted", "failed", "canceled"].includes(event.status)) {
+      throw new WorkItemError(400, "无效的终态 Run status", "invalid_terminal_status");
+    }
+    return transaction(db, () => {
+      const row = findRun.get(id);
+      if (!row) throw new WorkItemError(404, "运行记录不存在", "run_not_found");
+      const current = mapRun(row);
+      if (current.codexTurnId && event.turnId && current.codexTurnId !== event.turnId) {
+        throw new WorkItemError(409, "完成事件不属于当前 Run 的 turn", "terminal_turn_mismatch");
+      }
+      if (current.terminalEventKey) {
+        if (current.terminalEventKey === eventKey) return { run: current, replayed: true };
+        throw new WorkItemError(409, "Run 已由另一个终态事件结束", "terminal_event_conflict");
+      }
+      const timestamp = event.completedAt || now();
+      const terminalError = event.error ? String(event.error).slice(0, 4000) : null;
+      const result = updateRunTerminal.run(event.status, eventKey, timestamp, terminalError, now(), id, current.version);
+      if (Number(result.changes) !== 1) throw new WorkItemError(409, "Run 终态已被其他事件更新", "terminal_event_conflict");
+      const updated = mapRun(findRun.get(id));
+      audit("run", id, `turn_${event.status}`, attributionInput, current, updated);
+      return { run: updated, replayed: false };
+    });
+  }
+
   return {
     list() { return listWorkItems.all().map(mapWorkItem); },
     get(id) { const row = findWorkItem.get(id); return row ? mapWorkItem(row) : null; },
@@ -535,10 +575,12 @@ export function createWorkItemRepository(db) {
     },
     getRun(id) { const row = findRun.get(id); return row ? mapRun(row) : null; },
     getRunByThread(threadId) { const row = findRunByThread.get(threadId); return row ? mapRun(row) : null; },
+    getRunByTurn(threadId, turnId) { const row = findRunByTurn.get(threadId, turnId); return row ? mapRun(row) : null; },
     createRun,
     updateRun: updateExistingRun,
     claimLaunch,
     recordLaunch,
+    recordTerminal,
     listAudit(entityType, entityId) { return listAudit.all(entityType, entityId).map(mapAudit); },
     importWorkItem(input, source, attribution = { actorType: "system", actorId: "legacy-migration" }) {
       const existing = this.getBySource(source.kind, source.id);

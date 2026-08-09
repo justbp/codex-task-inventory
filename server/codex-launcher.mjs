@@ -102,7 +102,7 @@ export class CodexLauncher {
     });
   }
 
-  async launch({ cwd, prompt, threadId: existingThreadId = null, onThreadReady }) {
+  async launch({ cwd, prompt, threadId: existingThreadId = null, onThreadReady, onTurnStarted, onTurnCompleted, onLifecycleError }) {
     const child = spawn(this.command, [...this.commandArgs, "app-server", "--listen", "stdio://"], {
       cwd,
       env: this.env,
@@ -114,7 +114,13 @@ export class CodexLauncher {
     let nextId = 1;
     let stderr = "";
     let settled = false;
+    let boundThreadId = null;
+    let boundTurnId = null;
+    let completionHandled = false;
     const pending = new Map();
+    const finalMessages = new Map();
+    let resolveLifecycleReady;
+    const lifecycleReady = new Promise((resolve) => { resolveLifecycleReady = resolve; });
     const lines = readline.createInterface({ input: child.stdout });
 
     const stop = () => {
@@ -152,9 +158,32 @@ export class CodexLauncher {
         if (message.error) entry.reject(launchError(message.error.message || "Codex 请求失败", stderr));
         else entry.resolve(message.result);
       }
-      if (message.method === "turn/completed") {
-        child.stdin.end();
-        setTimeout(stop, 1000).unref();
+      if (message.method === "item/completed") {
+        const item = message.params?.item;
+        const turnId = message.params?.turnId || boundTurnId;
+        if (turnId && item?.type === "agentMessage" && (!item.phase || item.phase === "final_answer")) {
+          finalMessages.set(turnId, item.text || "");
+        }
+      }
+      if (message.method === "turn/completed" && !completionHandled) {
+        completionHandled = true;
+        const turn = message.params?.turn || {};
+        const turnId = turn.id || boundTurnId;
+        const completion = {
+          threadId: message.params?.threadId || boundThreadId,
+          turnId,
+          status: turn.status || "failed",
+          error: turn.error?.message || null,
+          finalMessage: finalMessages.get(turnId) || "",
+          completedAt: new Date().toISOString(),
+        };
+        void lifecycleReady.then(() => onTurnCompleted?.(completion)).catch((error) => {
+          if (onLifecycleError) onLifecycleError(error);
+          else console.error("Codex turn completion callback failed", error);
+        }).finally(() => {
+          child.stdin.end();
+          setTimeout(stop, 1000).unref();
+        });
       }
     });
     child.on("error", (error) => rejectPending(launchError("无法启动 Codex CLI", error.message)));
@@ -179,6 +208,7 @@ export class CodexLauncher {
         });
       const threadId = started?.thread?.id;
       if (!threadId) throw launchError("Codex 未返回 thread ID", stderr);
+      boundThreadId = threadId;
       await onThreadReady?.({ threadId, resumed: Boolean(existingThreadId) });
       const turn = await request("turn/start", {
         threadId,
@@ -187,6 +217,9 @@ export class CodexLauncher {
       });
       const turnId = turn?.turn?.id;
       if (!turnId) throw launchError("Codex 未返回 turn ID", stderr);
+      boundTurnId = turnId;
+      await onTurnStarted?.({ threadId, turnId, resumed: Boolean(existingThreadId) });
+      resolveLifecycleReady();
       settled = true;
       return { threadId, turnId, resumed: Boolean(existingThreadId), deepLink: `codex://threads/${threadId}` };
     } catch (error) {

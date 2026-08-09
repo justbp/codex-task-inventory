@@ -15,6 +15,7 @@ const sample = {
   source: "vscode", createdAt: "2026-08-03T10:00:00.000Z", updatedAt: "2026-08-03T10:01:00.000Z", archived: false, pinned: false,
   deepLink: "codex://threads/019fc79b-3541-7853-a09a-6bcd9ced1388", runtimeStatus: "active", activeTurnId: "turn-1", activeStartedAt: "2026-08-03T10:01:00.000Z",
   lastCompletedAt: null, lastInterruptedAt: null, lastProgress: "正在验证", lastProgressAt: "2026-08-03T10:01:10.000Z", lastFileChangeAt: null, lastError: "",
+  terminalTurns: [],
 };
 const monitoredThreads = [sample];
 const launches = [];
@@ -50,7 +51,9 @@ const launcher = {
       deepLink: `codex://threads/${id}`,
       activeTurnId: "turn-launched",
     });
-    return { threadId: id, turnId: `turn-launched-${launches.length}`, resumed: Boolean(input.threadId), deepLink: `codex://threads/${id}` };
+    const turnId = `turn-launched-${launches.length}`;
+    await input.onTurnStarted?.({ threadId: id, turnId, resumed: Boolean(input.threadId) });
+    return { threadId: id, turnId, resumed: Boolean(input.threadId), deepLink: `codex://threads/${id}` };
   },
   close() {},
 };
@@ -117,6 +120,7 @@ test("uses Codex runtime state as the authoritative in-progress lane", async () 
   const first = await (await fetch(`${baseUrl}/api/threads`)).json();
   assert.equal(first.threads.length, 1);
   assertThreadContract(first.threads[0]);
+  assert.equal(Object.hasOwn(first.threads[0], "terminalTurns"), false);
   assert.equal(first.threads[0].lane, "in_progress");
   assert.equal(first.threads[0].deepLink, sample.deepLink);
 
@@ -381,6 +385,128 @@ test("starts, resumes, and idempotently replays a Work Item through the Codex ex
   assert.equal(newThreadResponse.status, 201);
   assert.equal((await newThreadResponse.json()).resumed, false);
   assert.equal(launches.at(-1).threadId, null);
+});
+
+test("synchronizes a completed Codex turn into one Review Submission and in_review Work Status", async () => {
+  const item = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({
+      idempotencyKey: "api-review-item",
+      title: "M3.1 完成事件测试",
+      goal: "把真实完成事件同步为待验收",
+      nextAction: "生成 Review Submission",
+      acceptanceCriteria: ["Run completed", "Work Item in_review"],
+      scope: { allowed: "只操作测试数据", excluded: "不操作外部系统" },
+      cwd: sandbox,
+      status: "ready",
+      stage: "verify",
+    }),
+  })).json()).workItem;
+  const startResponse = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-review-start", expectedVersion: 1 }),
+  });
+  assert.equal(startResponse.status, 201);
+  const run = (await startResponse.json()).run;
+  const launch = launches.at(-1);
+  const event = {
+    threadId: run.codexThreadId,
+    turnId: run.codexTurnId,
+    status: "completed",
+    completedAt: "2026-08-09T06:00:00.000Z",
+    finalMessage: "## 已完成\n实现执行闭环\n\n## 验证结果\n测试全部通过\n\n## 风险\n存在人工验收步骤\n\n## 需要用户决定\n无\n\n## 下一步\n请用户验收",
+  };
+  const completed = await launch.onTurnCompleted(event);
+  assert.equal(completed.replayed, false);
+  assert.equal(completed.run.status, "completed");
+  assert.equal(completed.workItem.status, "in_review");
+  assert.equal(completed.review.completedSummary, "实现执行闭环");
+  assert.equal(completed.review.verificationSummary, "测试全部通过");
+  assert.equal(completed.review.sourceUri, `codex://threads/${run.codexThreadId}?turn=${run.codexTurnId}`);
+
+  const storedRun = (await (await fetch(`${baseUrl}/api/runs/${run.id}`)).json()).run;
+  assert.equal(storedRun.status, "completed");
+  assert.ok(storedRun.terminalEventKey);
+  assert.equal(storedRun.terminalAt, event.completedAt);
+  const listed = await (await fetch(`${baseUrl}/api/work-items/${item.id}/reviews`)).json();
+  assert.equal(listed.reviews.length, 1);
+  const byRun = await (await fetch(`${baseUrl}/api/runs/${run.id}/review`)).json();
+  assert.equal(byRun.review.id, completed.review.id);
+
+  const replayed = await launch.onTurnCompleted(event);
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.review.id, completed.review.id);
+  const listedAgain = await (await fetch(`${baseUrl}/api/work-items/${item.id}/reviews`)).json();
+  assert.equal(listedAgain.reviews.length, 1);
+  assert.equal((await (await fetch(`${baseUrl}/api/work-items/${item.id}`)).json()).workItem.status, "in_review");
+});
+
+test("records interrupted turns without fabricating a Review Submission", async () => {
+  const item = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-interrupted-item", title: "M3.1 中断测试", cwd: sandbox }),
+  })).json()).workItem;
+  const started = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-interrupted-start", expectedVersion: 1, mode: "explore" }),
+  });
+  const run = (await started.json()).run;
+  const synchronized = await launches.at(-1).onTurnCompleted({
+    threadId: run.codexThreadId, turnId: run.codexTurnId, status: "interrupted", finalMessage: "", completedAt: "2026-08-09T06:01:00.000Z",
+  });
+  assert.equal(synchronized.run.status, "interrupted");
+  assert.equal(synchronized.review, null);
+  assert.equal(synchronized.workItem.status, "inbox");
+  assert.deepEqual((await (await fetch(`${baseUrl}/api/work-items/${item.id}/reviews`)).json()).reviews, []);
+});
+
+test("does not overwrite a user's later Work Status when a completion event arrives late", async () => {
+  const item = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-late-completion-item", title: "M3.1 迟到事件测试", cwd: sandbox }),
+  })).json()).workItem;
+  const started = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-late-completion-start", expectedVersion: 1, mode: "explore" }),
+  });
+  const run = (await started.json()).run;
+  const canceled = await fetch(`${baseUrl}/api/work-items/${item.id}`, {
+    method: "PATCH", headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ expectedVersion: 1, status: "canceled" }),
+  });
+  assert.equal(canceled.status, 200);
+  const synchronized = await launches.at(-1).onTurnCompleted({
+    threadId: run.codexThreadId, turnId: run.codexTurnId, status: "completed", finalMessage: "## 已完成\n迟到结果", completedAt: "2026-08-09T06:01:30.000Z",
+  });
+  assert.equal(synchronized.run.status, "completed");
+  assert.ok(synchronized.review);
+  assert.equal(synchronized.workItem.status, "canceled");
+});
+
+test("reconciles a missed completion callback from the persisted Codex rollout state", async () => {
+  const item = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-reconcile-item", title: "M3.1 重启恢复测试", cwd: sandbox }),
+  })).json()).workItem;
+  const started = await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "api-reconcile-start", expectedVersion: 1, mode: "explore" }),
+  });
+  const run = (await started.json()).run;
+  const monitored = monitoredThreads.findLast((thread) => thread.id === run.codexThreadId);
+  monitored.runtimeStatus = "idle";
+  monitored.activeTurnId = null;
+  monitored.lastCompletedTurnId = run.codexTurnId;
+  monitored.lastCompletedAt = "2026-08-09T06:02:00.000Z";
+  monitored.lastProgress = "## 已完成\n从 rollout 恢复完成事件";
+  await fetch(`${baseUrl}/api/threads`);
+
+  const stored = (await (await fetch(`${baseUrl}/api/runs/${run.id}`)).json()).run;
+  assert.equal(stored.status, "completed");
+  const reviews = (await (await fetch(`${baseUrl}/api/work-items/${item.id}/reviews`)).json()).reviews;
+  assert.equal(reviews.length, 1);
+  assert.match(reviews[0].completedSummary, /rollout 恢复/);
 });
 
 test("persists failed and uncertain launches without automatically retrying them", async () => {

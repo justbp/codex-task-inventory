@@ -18,13 +18,28 @@ test("CodexLauncher starts a thread, binds it, then starts a turn", async () => 
   const launcher = new CodexLauncher({ command: process.execPath, commandArgs: [fixture], env: { FAKE_CODEX_LOG: log } });
   try {
     let ready;
-    const result = await launcher.launch({ cwd: sandbox, prompt: "frozen envelope", onThreadReady(value) { ready = value; } });
+    let turnStarted;
+    let resolveCompletion;
+    const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+    const result = await launcher.launch({
+      cwd: sandbox,
+      prompt: "frozen envelope",
+      onThreadReady(value) { ready = value; },
+      onTurnStarted(value) { turnStarted = value; },
+      onTurnCompleted(value) { resolveCompletion(value); },
+    });
     assert.deepEqual(ready, { threadId: "thread-created", resumed: false });
+    assert.deepEqual(turnStarted, { threadId: "thread-created", turnId: "turn-created", resumed: false });
     assert.deepEqual(result, { threadId: "thread-created", turnId: "turn-created", resumed: false, deepLink: "codex://threads/thread-created" });
     const requests = messages(log);
     assert.deepEqual(requests.map((entry) => entry.method), ["initialize", "initialized", "thread/start", "turn/start"]);
     assert.equal(requests.at(-1).params.input[0].text, "frozen envelope");
     assert.equal(requests.at(-1).params.cwd, sandbox);
+    const completed = await completion;
+    assert.equal(completed.threadId, "thread-created");
+    assert.equal(completed.turnId, "turn-created");
+    assert.equal(completed.status, "completed");
+    assert.match(completed.finalMessage, /等待人工验收/);
   } finally {
     launcher.close();
     rmSync(sandbox, { recursive: true, force: true });

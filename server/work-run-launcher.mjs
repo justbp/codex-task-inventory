@@ -15,7 +15,7 @@ function previousThread(workItems, workItemId, currentRunId) {
     .at(-1)?.codexThreadId || null;
 }
 
-export function createWorkRunLauncher({ workItems, workContext, launcher }) {
+export function createWorkRunLauncher({ workItems, workContext, workReview, launcher }) {
   async function start(workItemId, input = {}, attribution = {}) {
     const item = workItems.get(workItemId);
     if (!item) throw new WorkItemError(404, "工作任务不存在", "work_item_not_found");
@@ -69,13 +69,18 @@ export function createWorkRunLauncher({ workItems, workContext, launcher }) {
             codexThreadId: threadId,
           }, attribution);
         },
+        onTurnStarted: ({ threadId, turnId }) => {
+          run = workItems.recordLaunch(run.id, run.version, {
+            status: "running",
+            launchState: "started",
+            codexThreadId: threadId,
+            codexTurnId: turnId,
+          }, attribution);
+        },
+        onTurnCompleted: (event) => workReview.processTurnCompleted(run.id, event),
+        onLifecycleError: (error) => console.error(`Run ${run.id} lifecycle synchronization failed`, error),
       });
-      run = workItems.recordLaunch(run.id, run.version, {
-        status: "running",
-        launchState: "started",
-        codexThreadId: result.threadId,
-        codexTurnId: result.turnId,
-      }, attribution);
+      run = workItems.getRun(run.id);
       return { run, launched: true, replayed: false, resumed: result.resumed, deepLink: result.deepLink };
     } catch (error) {
       const current = workItems.getRun(run.id);

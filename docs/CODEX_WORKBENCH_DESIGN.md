@@ -401,6 +401,8 @@ Context Envelope 必须记录生成时间、Work Item version 和摘要来源。
 
 ### M3：打通执行、决策与验收闭环
 
+实施记录：`docs/M3_1_RUN_REVIEW_LIFECYCLE.md`（第一子里程碑）
+
 **目标**
 
 让具体任务的 Codex 可以通过看板结构化汇报、请求决定和提交验收。

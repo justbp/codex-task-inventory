@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 const MAX_TEXT = 280;
 const MAX_ROLLOUT_BYTES = 8 * 1024 * 1024;
 const ACTIVE_FRESHNESS_MS = 15 * 60 * 1000;
+const MAX_TERMINAL_TURNS = 50;
 
 function compact(value, max = MAX_TEXT) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
@@ -31,11 +32,14 @@ export class CodexMonitor {
     let activeTurnId = null;
     let activeStartedAt = null;
     let lastCompletedAt = null;
+    let lastCompletedTurnId = null;
     let lastProgress = "";
     let lastProgressAt = null;
     let lastFileChangeAt = null;
     let lastError = "";
     let lastAbortedAt = null;
+    let lastInterruptedTurnId = null;
+    const terminalTurns = [];
     const pendingCalls = new Map();
 
     const bytes = Math.min(stat.size, MAX_ROLLOUT_BYTES);
@@ -56,16 +60,20 @@ export class CodexMonitor {
         lastError = "";
         pendingCalls.clear();
       } else if (entry.type === "event_msg" && payload.type === "task_complete") {
+        lastCompletedTurnId = payload.turn_id || activeTurnId;
         activeTurnId = null;
         activeStartedAt = null;
         lastCompletedAt = at;
         if (payload.last_agent_message) lastProgress = compact(payload.last_agent_message);
+        if (lastCompletedTurnId) terminalTurns.push({ turnId: lastCompletedTurnId, status: "completed", completedAt: at, finalMessage: compact(payload.last_agent_message, 2_000) });
         pendingCalls.clear();
       } else if (entry.type === "event_msg" && payload.type === "turn_aborted") {
+        lastInterruptedTurnId = payload.turn_id || activeTurnId;
         activeTurnId = null;
         activeStartedAt = null;
         lastAbortedAt = at;
         lastError = compact(payload.reason || "任务已中断");
+        if (lastInterruptedTurnId) terminalTurns.push({ turnId: lastInterruptedTurnId, status: "interrupted", completedAt: at, error: lastError });
         pendingCalls.clear();
       } else if (entry.type === "event_msg" && payload.type === "error") {
         lastError = compact(payload.message || payload.error || "执行失败");
@@ -89,7 +97,7 @@ export class CodexMonitor {
       ? "interrupted"
       : activeTurnId && !activeIsFresh ? "unknown"
       : activeTurnId ? (waitingOnUser ? "waiting" : "active") : "idle";
-    const value = { runtimeStatus, activeTurnId, activeStartedAt, lastCompletedAt, lastInterruptedAt: lastAbortedAt, lastProgress, lastProgressAt, lastFileChangeAt, lastError, rolloutUpdatedAt: new Date(stat.mtimeMs).toISOString() };
+    const value = { runtimeStatus, activeTurnId, activeStartedAt, lastCompletedAt, lastCompletedTurnId, lastInterruptedAt: lastAbortedAt, lastInterruptedTurnId, terminalTurns: terminalTurns.slice(-MAX_TERMINAL_TURNS), lastProgress, lastProgressAt, lastFileChangeAt, lastError, rolloutUpdatedAt: new Date(stat.mtimeMs).toISOString() };
     this.rolloutCache.set(path, { size: stat.size, mtimeMs: stat.mtimeMs, value });
     return value;
   }

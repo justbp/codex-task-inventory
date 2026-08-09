@@ -22,6 +22,16 @@ test("derives active, progress, completion, and interruption from rollout events
   writeFileSync(path, lines.map(JSON.stringify).join("\n"));
   assert.equal(monitor.inspectRollout(path).runtimeStatus, "interrupted");
   assert.equal(monitor.inspectRollout(path).lastInterruptedAt, "2026-08-03T10:00:02Z");
+  assert.equal(monitor.inspectRollout(path).lastInterruptedTurnId, "one");
+
+  lines.push({ timestamp: "2026-08-03T10:00:03Z", type: "event_msg", payload: { type: "task_started", turn_id: "two" } });
+  lines.push({ timestamp: "2026-08-03T10:00:04Z", type: "event_msg", payload: { type: "task_complete", last_agent_message: "验证完成" } });
+  writeFileSync(path, lines.map(JSON.stringify).join("\n"));
+  const completed = monitor.inspectRollout(path);
+  assert.equal(completed.runtimeStatus, "idle");
+  assert.equal(completed.lastCompletedTurnId, "two");
+  assert.equal(completed.lastProgress, "验证完成");
+  assert.deepEqual(completed.terminalTurns.map(({ turnId, status }) => [turnId, status]), [["one", "interrupted"], ["two", "completed"]]);
   rmSync(dir, { recursive: true, force: true });
 });
 

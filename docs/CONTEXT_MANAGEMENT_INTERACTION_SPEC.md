@@ -318,9 +318,11 @@ reason: 无法确认修复字段是否影响后续校验
 | 暂停前强制 Recovery Point | 已实现 API | M2 |
 | 网页表单和操作按钮 | 未实现 | M4 任务详情；必要的执行入口可提前补齐 |
 | 自动创建或恢复真实 Codex thread 并发送 Envelope | 已实现 API | M2 收口 |
-| Codex 自动结构化回写 | 未实现 | M3 |
+| Codex turn 终态同步到 Run | 已实现 | M3.1 |
+| Review Submission 结构化摘要 | 已实现 API | M3.1 |
+| Codex 过程进展自动结构化回写 | 未实现 | M3 后续 |
 | Decision Request 卡片与回答路由 | 未实现 | M3 |
-| Review Submission 和人工验收 | 未实现 | M3 |
+| 人工通过、退回和创建后续任务 | 未实现 | M3 后续 |
 | 今日工作台 | 未实现 | M4 |
 
 ## 12. 后续实现验收要求
