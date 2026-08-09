@@ -85,6 +85,38 @@ before(async () => {
 });
 after(async () => { await new Promise((resolve) => server.close(resolve)); rmSync(sandbox, { recursive: true, force: true }); });
 
+async function createCompletedReview(key, itemInput = {}) {
+  const item = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({
+      idempotencyKey: `${key}-item`,
+      title: `${key} 验收任务`,
+      goal: "验证人工验收闭环",
+      nextAction: "完成本轮执行并提交验收",
+      acceptanceCriteria: ["用户决定最终验收结果"],
+      scope: { allowed: "只操作测试数据", excluded: "不操作外部系统" },
+      cwd: sandbox,
+      status: "ready",
+      stage: "verify",
+      ...itemInput,
+    }),
+  })).json()).workItem;
+  const started = await (await fetch(`${baseUrl}/api/work-items/${item.id}/start`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: `${key}-start`, expectedVersion: item.version }),
+  })).json();
+  const launch = launches.at(-1);
+  const completed = await launch.onTurnCompleted({
+    threadId: started.run.codexThreadId,
+    turnId: started.run.codexTurnId,
+    status: "completed",
+    completedAt: "2026-08-09T08:30:00.000Z",
+    finalMessage: "## 已完成\n完成待验收实现\n\n## 验证结果\n自动化验证通过\n\n## 风险\n需要用户验收\n\n## 需要用户决定\n无\n\n## 下一步\n请用户验收",
+  });
+  return { item: completed.workItem, run: completed.run, review: completed.review, launch };
+}
+
 test("serves the monitor and reports a no-token local source", async () => {
   assert.equal((await fetch(`${baseUrl}/`)).status, 200);
   assert.equal((await fetch(`${baseUrl}/completed`)).status, 200);
@@ -440,6 +472,191 @@ test("synchronizes a completed Codex turn into one Review Submission and in_revi
   const listedAgain = await (await fetch(`${baseUrl}/api/work-items/${item.id}/reviews`)).json();
   assert.equal(listedAgain.reviews.length, 1);
   assert.equal((await (await fetch(`${baseUrl}/api/work-items/${item.id}`)).json()).workItem.status, "in_review");
+});
+
+test("allows only a user to approve the latest Review and complete the Work Item idempotently", async () => {
+  const prepared = await createCompletedReview("api-review-approve");
+  const body = {
+    idempotencyKey: "api-review-approve-action",
+    action: "approve",
+    expectedReviewVersion: prepared.review.version,
+    expectedWorkItemVersion: prepared.item.version,
+    feedback: "验收通过。",
+  };
+  const staleAttempt = await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/actions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ ...body, idempotencyKey: "api-review-approve-stale", expectedWorkItemVersion: prepared.item.version - 1 }),
+  });
+  assert.equal(staleAttempt.status, 409);
+  assert.equal((await staleAttempt.json()).code, "version_conflict");
+
+  const codexAttempt = await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/actions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-type": "codex", "x-codex-thread-id": prepared.run.codexThreadId },
+    body: JSON.stringify({ ...body, idempotencyKey: "api-review-approve-codex" }),
+  });
+  assert.equal(codexAttempt.status, 403);
+  assert.equal((await codexAttempt.json()).code, "user_confirmation_required");
+
+  const response = await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/actions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(response.status, 201);
+  const approved = await response.json();
+  assert.equal(approved.reviewAction.action, "approve");
+  assert.equal(approved.reviewAction.state, "applied");
+  assert.equal(approved.workItem.status, "done");
+  assert.equal(approved.reviewedRun.status, "completed");
+  assert.equal(approved.revisionRun, null);
+
+  const replay = await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/actions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json()).replayed, true);
+  assert.equal((await (await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/action`)).json()).reviewAction.id, approved.reviewAction.id);
+});
+
+test("returns a Review for changes by creating a new Run on the same Work Item and main task", async () => {
+  const prepared = await createCompletedReview("api-review-changes");
+  const beforeLaunches = launches.length;
+  const body = {
+    idempotencyKey: "api-review-changes-action",
+    action: "request_changes",
+    expectedReviewVersion: prepared.review.version,
+    expectedWorkItemVersion: prepared.item.version,
+    feedback: "补充失败分支测试，并明确验证结果。",
+  };
+  const response = await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/actions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(response.status, 201);
+  const returned = await response.json();
+  assert.equal(returned.reviewAction.action, "request_changes");
+  assert.equal(returned.reviewAction.state, "applied");
+  assert.equal(returned.reviewAction.revisionRunId, returned.revisionRun.id);
+  assert.equal(returned.reviewedRun.status, "completed");
+  assert.equal(returned.revisionRun.status, "running");
+  assert.equal(returned.revisionRun.workItemId, prepared.item.id);
+  assert.notEqual(returned.revisionRun.id, prepared.run.id);
+  assert.equal(returned.revisionRun.codexThreadId, prepared.run.codexThreadId);
+  assert.notEqual(returned.revisionRun.codexTurnId, prepared.run.codexTurnId);
+  assert.equal(returned.workItem.status, "active");
+  assert.match(returned.workItem.nextAction, /补充失败分支测试/);
+  assert.match(launches.at(-1).prompt, /补充失败分支测试/);
+  assert.equal(launches.at(-1).threadId, prepared.run.codexThreadId);
+  assert.match(JSON.stringify(returned.revisionRun.contextEnvelope.evidenceRefs), /验收退回意见/);
+
+  const replay = await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/actions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json()).replayed, true);
+  assert.equal(launches.length, beforeLaunches + 1, "replaying a review action must not launch another revision Run");
+  assert.equal((await (await fetch(`${baseUrl}/api/work-items/${prepared.item.id}/runs`)).json()).runs.length, 2);
+
+  const revisionLaunch = launches.at(-1);
+  const completed = await revisionLaunch.onTurnCompleted({
+    threadId: returned.revisionRun.codexThreadId,
+    turnId: returned.revisionRun.codexTurnId,
+    status: "completed",
+    completedAt: "2026-08-09T08:31:00.000Z",
+    finalMessage: "## 已完成\n已按验收意见修改\n\n## 验证结果\n失败分支测试通过\n\n## 风险\n无\n\n## 需要用户决定\n无\n\n## 下一步\n再次验收",
+  });
+  assert.equal(completed.workItem.status, "in_review");
+  assert.equal((await (await fetch(`${baseUrl}/api/work-items/${prepared.item.id}/reviews`)).json()).reviews.length, 2);
+  const audit = (await (await fetch(`${baseUrl}/api/review-actions/${returned.reviewAction.id}/audit`)).json()).events;
+  assert.deepEqual(audit.map((event) => event.action), ["create", "state_applied"]);
+});
+
+test("accepts the current result and creates one independent linked follow-up Work Item", async () => {
+  const prepared = await createCompletedReview("api-review-follow-up");
+  const body = {
+    idempotencyKey: "api-review-follow-up-action",
+    action: "accept_with_follow_up",
+    expectedReviewVersion: prepared.review.version,
+    expectedWorkItemVersion: prepared.item.version,
+    feedback: "当前范围验收通过，性能优化另开任务。",
+    followUp: {
+      title: "优化验收链路性能",
+      goal: "降低大量 Review 查询的延迟",
+      nextAction: "先测量查询基线",
+      acceptanceCriteria: ["有可重复的性能基线"],
+      scope: { allowed: "只做性能分析", excluded: "不改变业务语义" },
+      stage: "explore",
+      tags: ["follow-up"],
+    },
+  };
+  const response = await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/actions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(response.status, 201);
+  const accepted = await response.json();
+  assert.equal(accepted.reviewAction.action, "accept_with_follow_up");
+  assert.equal(accepted.workItem.status, "done");
+  assert.equal(accepted.followUpWorkItem.status, "inbox");
+  assert.equal(accepted.followUpWorkItem.title, "优化验收链路性能");
+  assert.notEqual(accepted.followUpWorkItem.id, prepared.item.id);
+  assert.equal(accepted.reviewAction.followUpWorkItemId, accepted.followUpWorkItem.id);
+  assert.equal((await (await fetch(`${baseUrl}/api/work-items/${accepted.followUpWorkItem.id}/runs`)).json()).runs.length, 0);
+  const followUpContext = (await (await fetch(`${baseUrl}/api/work-items/${accepted.followUpWorkItem.id}/context`)).json()).context;
+  assert.deepEqual(followUpContext.relations.map((relation) => [relation.relationType, relation.targetWorkItemId]), [["parent", prepared.item.id]]);
+
+  const replay = await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/actions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify(body),
+  });
+  assert.equal(replay.status, 200);
+  const replayed = await replay.json();
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.followUpWorkItem.id, accepted.followUpWorkItem.id);
+});
+
+test("keeps Review feedback durable and never auto-retries failed or uncertain revision launches", async () => {
+  async function exercise(key, feedback, expectedCode, expectedState) {
+    const prepared = await createCompletedReview(key);
+    const body = {
+      idempotencyKey: `${key}-action`,
+      action: "request_changes",
+      expectedReviewVersion: prepared.review.version,
+      expectedWorkItemVersion: prepared.item.version,
+      feedback,
+    };
+    const before = launches.length;
+    const response = await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/actions`, {
+      method: "POST", headers: { "content-type": "application/json", "x-actor-id": "wangfei" }, body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 502);
+    const failed = await response.json();
+    assert.equal(failed.code, expectedCode);
+    assert.equal(failed.details.reviewAction.state, expectedState);
+    assert.equal(failed.details.revisionRun.workItemId, prepared.item.id);
+    assert.match((await (await fetch(`${baseUrl}/api/work-items/${prepared.item.id}`)).json()).workItem.nextAction, /模拟/);
+
+    const replay = await fetch(`${baseUrl}/api/reviews/${prepared.review.id}/actions`, {
+      method: "POST", headers: { "content-type": "application/json", "x-actor-id": "wangfei" }, body: JSON.stringify(body),
+    });
+    assert.equal(replay.status, 200);
+    const replayed = await replay.json();
+    assert.equal(replayed.replayed, true);
+    assert.equal(replayed.reviewAction.state, expectedState);
+    assert.equal(launches.length, before + 1, "a resolved failed/uncertain review action must not automatically launch again");
+  }
+
+  await exercise("api-review-revision-failed", "模拟启动失败，并保留退回意见。", "review_revision_failed", "failed");
+  await exercise("api-review-revision-uncertain", "模拟不确定结果，并禁止自动重试。", "review_revision_uncertain", "uncertain");
 });
 
 test("routes a structured Decision Request answer back to the exact original Run", async () => {

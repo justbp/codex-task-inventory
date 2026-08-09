@@ -401,9 +401,9 @@ Context Envelope 必须记录生成时间、Work Item version 和摘要来源。
 
 ### M3：打通执行、决策与验收闭环
 
-实现进度：M3.1 已完成 Run 终态与 Review Submission；M3.2 已完成 Decision Request 领域 API、等待状态和用户回答到原 Run 的精确续跑。人工验收动作留在 M3.3，正式页面交互留在 M4。
+实现进度：M3.1 已完成 Run 终态与 Review Submission；M3.2 已完成 Decision Request 与回答原 Run；M3.3 已完成通过、退回修改、接受当前结果并创建后续任务。M3 后台闭环完成，正式页面交互留在 M4。
 
-实施记录：`docs/M3_1_RUN_REVIEW_LIFECYCLE.md`（第一子里程碑）、`docs/M3_2_DECISION_REQUEST_ROUTING.md`（第二子里程碑）
+实施记录：`docs/M3_1_RUN_REVIEW_LIFECYCLE.md`、`docs/M3_2_DECISION_REQUEST_ROUTING.md`、`docs/M3_3_REVIEW_ACTIONS.md`
 
 **目标**
 

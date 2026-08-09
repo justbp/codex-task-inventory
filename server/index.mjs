@@ -13,6 +13,7 @@ import { createWorkContextRepository, initWorkContextSchema } from "./work-conte
 import { createWorkRunLauncher } from "./work-run-launcher.mjs";
 import { createWorkReviewRepository, initWorkReviewSchema } from "./work-review.mjs";
 import { createWorkDecisionRepository, createWorkDecisionRouter, initWorkDecisionSchema } from "./work-decision.mjs";
+import { createWorkReviewActionService, initWorkReviewActionSchema } from "./work-review-action.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SERVER_DIR, "..");
@@ -295,6 +296,7 @@ export function createTaskServer(options = {}) {
   initWorkContextSchema(db);
   initWorkReviewSchema(db);
   initWorkDecisionSchema(db);
+  initWorkReviewActionSchema(db);
   const metadata = metadataRepository(db);
   const manual = manualRepository(db);
   const workItems = createWorkItemRepository(db);
@@ -305,6 +307,7 @@ export function createTaskServer(options = {}) {
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
   const workRunLauncher = createWorkRunLauncher({ workItems, workContext, workReview, launcher });
   const workDecisionRouter = createWorkDecisionRouter({ db, decisions: workDecisions, workItems, workReview, launcher });
+  const workReviewActions = createWorkReviewActionService({ db, workItems, workContext, workReview, workRunLauncher });
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
   const notifier = options.notifier || new MacOSNotifier(options.notificationOptions);
   const distDir = resolve(options.distDir || DEFAULT_DIST);
@@ -517,6 +520,22 @@ export function createTaskServer(options = {}) {
         const review = workReview.getByRun(runReviewMatch[1]);
         if (!review) throw new WorkItemError(404, "验收提交不存在", "review_submission_not_found");
         return json(res, 200, { review });
+      }
+      const reviewActionApplyMatch = url.pathname.match(/^\/api\/reviews\/([0-9a-f-]+)\/actions$/i);
+      if (reviewActionApplyMatch && req.method === "POST") {
+        const body = await parseBody(req);
+        const result = await workReviewActions.apply(reviewActionApplyMatch[1], body, workItemAttribution(req));
+        return json(res, result.replayed ? 200 : 201, result);
+      }
+      const reviewActionMatch = url.pathname.match(/^\/api\/reviews\/([0-9a-f-]+)\/action$/i);
+      if (reviewActionMatch && req.method === "GET") {
+        const reviewAction = workReviewActions.getByReview(reviewActionMatch[1]);
+        if (!reviewAction) throw new WorkItemError(404, "验收动作不存在", "review_action_not_found");
+        return json(res, 200, { reviewAction });
+      }
+      const reviewActionAuditMatch = url.pathname.match(/^\/api\/review-actions\/([0-9a-f-]+)\/audit$/i);
+      if (reviewActionAuditMatch && req.method === "GET") {
+        return json(res, 200, { events: workReviewActions.listAudit(reviewActionAuditMatch[1]) });
       }
       if (url.pathname === "/api/items" && req.method === "POST") return json(res, 201, { item: manual.create(await parseBody(req)) });
       if (url.pathname === "/api/items/batch" && req.method === "POST") {
