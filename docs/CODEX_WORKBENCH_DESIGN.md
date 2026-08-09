@@ -433,9 +433,9 @@ Context Envelope 必须记录生成时间、Work Item version 和摘要来源。
 
 ### M4：新增“今日工作台”视图
 
-实现进度：M4.1 正在实现独立今日工作台和用户手工主线；统一任务详情与 Decision/Review 交互留在 M4.2，WIP 策略留在 M4.3。
+实现进度：M4.1 已完成独立今日工作台和用户手工主线；M4.2 已完成统一任务详情与 Decision/Review 页面交互；WIP 策略留在 M4.3。
 
-实施记录：`docs/M4_1_TODAY_WORKSPACE.md`
+实施记录：`docs/M4_1_TODAY_WORKSPACE.md`、`docs/M4_2_WORK_ITEM_DETAIL.md`
 
 **目标**
 

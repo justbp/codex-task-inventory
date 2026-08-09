@@ -316,15 +316,15 @@ reason: 无法确认修复字段是否影响后续校验
 | Run 保存冻结快照 | 已实现 | M2 |
 | Decision、Recovery、关系、证据存储 | 已实现 API | M2 |
 | 暂停前强制 Recovery Point | 已实现 API | M2 |
-| 网页表单和操作按钮 | 未实现 | M4 任务详情；必要的执行入口可提前补齐 |
+| Work Item 统一详情与上下文展示 | 已实现页面 | M4.2 |
 | 自动创建或恢复真实 Codex thread 并发送 Envelope | 已实现 API | M2 收口 |
 | Codex turn 终态同步到 Run | 已实现 | M3.1 |
 | Review Submission 结构化摘要 | 已实现 API | M3.1 |
 | Codex 过程进展自动结构化回写 | 未实现 | M3 后续 |
 | Decision Request 领域 API 与回答原 Run 路由 | 已实现 API | M3.2 |
-| Decision Request 正式卡片交互 | 未实现 | M4 |
+| Decision Request 正式卡片交互 | 已实现页面 | M4.2 |
 | 人工通过、退回和创建后续任务领域 API | 已实现 API | M3.3 |
-| 人工验收正式卡片交互 | 未实现 | M4 |
+| 人工验收正式卡片交互 | 已实现页面 | M4.2 |
 | 今日工作台 | 未实现 | M4 |
 
 ## 12. 后续实现验收要求

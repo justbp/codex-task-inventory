@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { WorkItem, WorkStatus } from "../types";
+import WorkItemDetailDrawer from "./WorkItemDetailDrawer";
 
 type AttentionLane = "mainline" | "background" | "decision" | "review" | "parking";
 
@@ -46,6 +47,7 @@ export default function TodayWorkspace() {
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [candidateId, setCandidateId] = useState("");
+  const [selectedWorkItemId, setSelectedWorkItemId] = useState(() => new URLSearchParams(window.location.search).get("workItem"));
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -89,6 +91,16 @@ export default function TodayWorkspace() {
   const selectedCandidate = candidates.find((item) => item.id === candidateId) || null;
   const attentionCount = groups.decision.length + groups.review.length;
 
+  function openDetail(id: string) {
+    setSelectedWorkItemId(id);
+    const url = new URL(window.location.href); url.searchParams.set("workItem", id); window.history.replaceState(null, "", url);
+  }
+
+  function closeDetail() {
+    setSelectedWorkItemId(null);
+    const url = new URL(window.location.href); url.searchParams.delete("workItem"); window.history.replaceState(null, "", url);
+  }
+
   return <main className="workspace-shell today-shell">
     <header className="topbar">
       <div className="brand-area"><div className="brand"><span className="brand-mark"><img src="/app-icon-192.png" alt=""/></span><div><strong>Codex Workbench</strong><span>人的注意力与工作结果</span></div></div></div>
@@ -116,19 +128,20 @@ export default function TodayWorkspace() {
       {LANES.map((lane) => <section className={`attention-lane attention-${lane.id}`} key={lane.id}>
         <header><div><span/><h2>{lane.title}</h2><b>{groups[lane.id].length}</b></div><p>{lane.subtitle}</p></header>
         <div className="attention-list">
-          {loading ? <TodaySkeleton/> : groups[lane.id].length ? groups[lane.id].map((item) => <WorkItemCard item={item} lane={lane.id} saving={savingId === item.id} onRemoveFocus={() => void setTodayFocus(item, false)} key={item.id}/>) : <div className="attention-empty"><strong>暂无任务</strong><p>{lane.empty}</p></div>}
+          {loading ? <TodaySkeleton/> : groups[lane.id].length ? groups[lane.id].map((item) => <WorkItemCard item={item} lane={lane.id} saving={savingId === item.id} onOpen={() => openDetail(item.id)} onRemoveFocus={() => void setTodayFocus(item, false)} key={item.id}/>) : <div className="attention-empty"><strong>暂无任务</strong><p>{lane.empty}</p></div>}
         </div>
       </section>)}
     </section>
+    {selectedWorkItemId && <WorkItemDetailDrawer workItemId={selectedWorkItemId} onClose={closeDetail} onChanged={() => load(true)}/>}
   </main>;
 }
 
-function WorkItemCard({ item, lane, saving, onRemoveFocus }: { item: WorkItem; lane: AttentionLane; saving: boolean; onRemoveFocus: () => void }) {
-  return <article className="work-item-card">
+function WorkItemCard({ item, lane, saving, onOpen, onRemoveFocus }: { item: WorkItem; lane: AttentionLane; saving: boolean; onOpen: () => void; onRemoveFocus: () => void }) {
+  return <article className="work-item-card" tabIndex={0} onClick={onOpen} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onOpen(); }}>
     <div className="work-item-meta"><span>{item.project || "未归项目"}</span><b>{STATUS_LABELS[item.status]}</b></div>
     <h3>{item.title}</h3>
     <dl><div><dt>目标</dt><dd>{item.goal || "未提供"}</dd></div><div><dt>下一步</dt><dd>{item.nextAction || "未提供"}</dd></div></dl>
-    <footer><span>{relativeTime(item.updatedAt)}更新 · v{item.version}</span>{lane === "mainline" && <button disabled={saving} onClick={onRemoveFocus}>{saving ? "保存中…" : "移出主线"}</button>}</footer>
+    <footer><span>{relativeTime(item.updatedAt)}更新 · v{item.version}</span>{lane === "mainline" && <button disabled={saving} onClick={(event) => { event.stopPropagation(); onRemoveFocus(); }}>{saving ? "保存中…" : "移出主线"}</button>}</footer>
   </article>;
 }
 

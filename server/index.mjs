@@ -385,7 +385,13 @@ export function createTaskServer(options = {}) {
         workReview.reconcileMonitoredThreads(monitor.list());
         const codexThreads = createSnapshot(monitor, metadata, new Map(), { includeHidden: url.searchParams.get("hidden") === "1" });
         await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
-        return json(res, 200, { threads: [...manual.list(), ...applyThreadNames(codexThreads, threadNames)] });
+        const threads = [...manual.list(), ...applyThreadNames(codexThreads, threadNames)].map((thread) => {
+          const workItem = thread.kind === "manual"
+            ? workItems.getBySource("manual", thread.id)
+            : (() => { const run = workItems.getRunByThread(thread.id); return run ? workItems.get(run.workItemId) : workItems.getBySource("codex", thread.id); })();
+          return { ...thread, workItemId: workItem?.id || null };
+        });
+        return json(res, 200, { threads });
       }
       if (url.pathname === "/api/work-items" && req.method === "GET") return json(res, 200, { workItems: workItems.list() });
       if (url.pathname === "/api/work-items" && req.method === "POST") {
@@ -425,6 +431,20 @@ export function createTaskServer(options = {}) {
           contextEnvelope,
           contextWorkItemVersion: contextEnvelope.workItem.version,
         }, workItemAttribution(req), idempotencyKey) });
+      }
+      const workItemDetailMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/detail$/i);
+      if (workItemDetailMatch && req.method === "GET") {
+        const workItem = workItems.get(workItemDetailMatch[1]);
+        if (!workItem) throw new WorkItemError(404, "工作任务不存在", "work_item_not_found");
+        const reviews = workReview.list(workItem.id);
+        return json(res, 200, { detail: {
+          workItem,
+          runs: workItems.listRuns(workItem.id),
+          context: workContext.context(workItem.id),
+          decisionRequests: workDecisions.listByWorkItem(workItem.id),
+          reviews,
+          reviewActions: reviews.map((review) => workReviewActions.getByReview(review.id)).filter(Boolean),
+        } });
       }
       const workItemReviewsMatch = url.pathname.match(/^\/api\/work-items\/([0-9a-f-]+)\/reviews$/i);
       if (workItemReviewsMatch && req.method === "GET") return json(res, 200, { reviews: workReview.list(workItemReviewsMatch[1]) });

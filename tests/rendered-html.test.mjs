@@ -5,10 +5,11 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 
 test("ships the unchanged Run board and a separate Work Item today workspace", async () => {
-  const [html, workspace, todayWorkspace, main, styles, packageJson] = await Promise.all([
+  const [html, workspace, todayWorkspace, detailDrawer, main, styles, packageJson] = await Promise.all([
     readFile(new URL("index.html", root), "utf8"),
     readFile(new URL("app/components/TaskWorkspace.tsx", root), "utf8"),
     readFile(new URL("app/components/TodayWorkspace.tsx", root), "utf8"),
+    readFile(new URL("app/components/WorkItemDetailDrawer.tsx", root), "utf8"),
     readFile(new URL("src/main.tsx", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
@@ -67,5 +68,18 @@ test("ships the unchanged Run board and a separate Work Item today workspace", a
   assert.match(todayWorkspace, /由你选择，Codex 不会自动改变计划/);
   assert.doesNotMatch(todayWorkspace, /\/api\/threads/);
   assert.match(styles, /\.today-board/);
+  assert.match(workspace, /打开工作详情/);
+  assert.match(workspace, /\/today\?workItem=\$\{thread\.workItemId\}/);
+  assert.match(todayWorkspace, /WorkItemDetailDrawer/);
+  assert.match(todayWorkspace, /new URLSearchParams\(window\.location\.search\)\.get\("workItem"\)/);
+  for (const label of ["任务事实", "已确认决定", "任务关系", "需要你的决定", "验收结果", "执行历史", "恢复与证据"]) assert.match(detailDrawer, new RegExp(label));
+  assert.match(detailDrawer, /\/api\/work-items\/\$\{workItemId\}\/detail/);
+  assert.match(detailDrawer, /\/api\/decision-requests\/\$\{pendingDecision\.id\}\/answer/);
+  assert.match(detailDrawer, /\/api\/reviews\/\$\{latestReview\.id\}\/actions/);
+  assert.match(detailDrawer, /expectedRunVersion: run\.version/);
+  assert.match(detailDrawer, /expectedReviewVersion: latestReview\.version/);
+  assert.match(detailDrawer, /idempotencyKey: key/);
+  assert.match(detailDrawer, /只有你确认“通过”或“接受并建后续”/);
+  assert.match(styles, /\.work-detail-drawer/);
   assert.doesNotMatch(`${html}\n${packageJson}`, /codex-preview|vinext|wrangler|react-loading-skeleton/i);
 });

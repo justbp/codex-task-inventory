@@ -155,6 +155,8 @@ test("uses Codex runtime state as the authoritative in-progress lane", async () 
   assert.equal(Object.hasOwn(first.threads[0], "terminalTurns"), false);
   assert.equal(first.threads[0].lane, "in_progress");
   assert.equal(first.threads[0].deepLink, sample.deepLink);
+  assert.equal(Object.hasOwn(first.threads[0], "workItemId"), true);
+  assert.equal(typeof first.threads[0].workItemId, "string");
 
   const update = await fetch(`${baseUrl}/api/threads/${sample.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ lane: "completed", tags: ["monitor"] }) });
   assert.equal(update.status, 200);
@@ -292,6 +294,40 @@ test("lets only the user select a versioned today mainline", async () => {
   });
   assert.equal(staleResponse.status, 409);
   assert.equal((await (await fetch(`${baseUrl}/api/work-items/${created.id}`)).json()).workItem.todayFocus, true);
+});
+
+test("serves one attributable Work Item detail aggregate without copying thread history", async () => {
+  const created = (await (await fetch(`${baseUrl}/api/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({
+      idempotencyKey: "detail-aggregate-item",
+      title: "统一详情聚合",
+      goal: "从 Work Item 读取任务事实",
+      nextAction: "检查详情接口",
+      acceptanceCriteria: ["详情包含任务、Run 和上下文"],
+      scope: { allowed: "只读聚合", excluded: "不复制对话全文" },
+      status: "ready",
+    }),
+  })).json()).workItem;
+  const decisionResponse = await fetch(`${baseUrl}/api/work-items/${created.id}/decisions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+    body: JSON.stringify({ idempotencyKey: "detail-aggregate-decision", expectedVersion: created.version, decision: "保持只读聚合", reason: "保护上下文边界" }),
+  });
+  assert.equal(decisionResponse.status, 201);
+
+  const response = await fetch(`${baseUrl}/api/work-items/${created.id}/detail`);
+  assert.equal(response.status, 200);
+  const detail = (await response.json()).detail;
+  assert.equal(detail.workItem.id, created.id);
+  assert.equal(detail.workItem.version, 2);
+  assert.deepEqual(detail.runs, []);
+  assert.equal(detail.context.decisions.length, 1);
+  assert.deepEqual(detail.decisionRequests, []);
+  assert.deepEqual(detail.reviews, []);
+  assert.deepEqual(detail.reviewActions, []);
+  assert.equal(JSON.stringify(detail).includes("thread history"), false);
 });
 
 test("generates frozen Context Envelopes and resumes from a Recovery Point", async () => {

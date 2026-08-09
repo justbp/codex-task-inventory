@@ -30,6 +30,93 @@ export type WorkItem = {
   updatedAt: string;
 };
 
+export type WorkItemRun = {
+  id: string;
+  workItemId: string;
+  status: "queued" | "running" | "waiting" | "completed" | "interrupted" | "failed" | "canceled";
+  objective: string;
+  codexThreadId: string | null;
+  codexTurnId: string | null;
+  mode: "explore" | "implementation";
+  expectedOutput: string;
+  contextWorkItemVersion: number | null;
+  launchState: string;
+  launchError: string | null;
+  terminalAt: string | null;
+  terminalError: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DecisionRequest = {
+  id: string;
+  workItemId: string;
+  runId: string;
+  question: string;
+  contextSummary: string;
+  options: { id: string; label: string; description: string }[];
+  recommendedOptionId: string | null;
+  recommendationReason: string;
+  risks: string;
+  defaultConsequence: string;
+  status: "pending" | "answered" | "canceled";
+  routingState: "not_requested" | "routing" | "routed" | "failed" | "uncertain";
+  routingError: string | null;
+  sourceUri: string;
+  answerOptionId: string | null;
+  answerText: string | null;
+  answerUri: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ReviewSubmission = {
+  id: string;
+  workItemId: string;
+  runId: string;
+  workItemVersion: number;
+  completedSummary: string;
+  verificationSummary: string;
+  risks: string;
+  needsDecision: string;
+  suggestedNextAction: string;
+  sourceUri: string;
+  version: number;
+  createdAt: string;
+};
+
+export type ReviewAction = {
+  id: string;
+  reviewSubmissionId: string;
+  action: "approve" | "request_changes" | "accept_with_follow_up";
+  state: "applying" | "applied" | "failed" | "uncertain";
+  feedback: string;
+  revisionRunId: string | null;
+  followUpWorkItemId: string | null;
+  error: string | null;
+  version: number;
+  createdAt: string;
+};
+
+type Attributed = { version: number; actorType: string; actorId: string; codexThreadId: string | null; createdAt: string };
+export type WorkItemContext = {
+  decisions: ({ id: string; workItemId: string; decision: string; reason: string } & Attributed)[];
+  recoveryPoints: ({ id: string; workItemId: string; sourceRunId: string | null; workItemVersion: number; currentGoal: string; currentConclusion: string; completed: string[]; unresolved: string[]; nextAction: string; resourceRefs: string[] } & Attributed)[];
+  relations: ({ id: string; workItemId: string; targetWorkItemId: string; relationType: "parent" | "blocked_by" | "related" } & Attributed)[];
+  evidence: ({ id: string; workItemId: string; runId: string | null; kind: string; label: string; uri: string; summary: string } & Attributed)[];
+};
+
+export type WorkItemDetail = {
+  workItem: WorkItem;
+  runs: WorkItemRun[];
+  context: WorkItemContext;
+  decisionRequests: DecisionRequest[];
+  reviews: ReviewSubmission[];
+  reviewActions: ReviewAction[];
+};
+
 export type CodexQuotaWindow = {
   usedPercent: number | null;
   remainingPercent: number | null;
@@ -61,6 +148,7 @@ export type CodexThread = {
   pinned: boolean;
   deepLink: string | null;
   codexThreadId?: string | null;
+  workItemId?: string | null;
   runtimeStatus: RuntimeStatus;
   activeTurnId: string | null;
   activeStartedAt: string | null;
