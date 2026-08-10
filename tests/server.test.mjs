@@ -390,6 +390,135 @@ test("warns or blocks new focus and Run work with a versioned WIP policy", async
   assert.equal(restored.status, 200);
 });
 
+test("organizes only minimal inbox context and atomically applies selected manager suggestions", async () => {
+  async function createInbox(key, title) {
+    return (await (await fetch(`${baseUrl}/api/work-items`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-actor-id": "wangfei" },
+      body: JSON.stringify({
+        idempotencyKey: key,
+        title,
+        description: `${title} 的简短背景`,
+        acceptanceCriteria: ["SECRET-ACCEPTANCE-MUST-NOT-LEAK"],
+        scope: { allowed: "SECRET-SCOPE-MUST-NOT-LEAK", excluded: "SECRET-EXCLUDED-MUST-NOT-LEAK" },
+        cwd: "/tmp/SECRET-CWD-MUST-NOT-LEAK",
+        status: "inbox",
+      }),
+    })).json()).workItem;
+  }
+
+  const first = await createInbox("manager-inbox-first", "整理客户反馈");
+  const second = await createInbox("manager-inbox-second", "客户反馈待整理");
+  const launchesBefore = launches.length;
+  const request = { idempotencyKey: "manager-inbox-call-one" };
+  const startedResponse = await fetch(`${baseUrl}/api/board-manager/inbox-organize`, {
+    method: "POST", headers: { "content-type": "application/json", "x-actor-id": "wangfei" }, body: JSON.stringify(request),
+  });
+  assert.equal(startedResponse.status, 202);
+  const started = await startedResponse.json();
+  assert.equal(started.call.status, "running");
+  assert.equal(launches.length, launchesBefore + 1);
+  const managerLaunch = launches.at(-1);
+  assert.equal(managerLaunch.sandbox, "read-only");
+  assert.equal(managerLaunch.approvalPolicy, "never");
+  for (const expected of [first.id, second.id, first.title, second.title]) assert.match(managerLaunch.prompt, new RegExp(expected));
+  for (const forbidden of ["SECRET-ACCEPTANCE", "SECRET-SCOPE", "SECRET-EXCLUDED", "SECRET-CWD", "codexThreadId", "runs"]) assert.equal(managerLaunch.prompt.includes(forbidden), false, `${forbidden} must stay outside manager context`);
+
+  const replayResponse = await fetch(`${baseUrl}/api/board-manager/inbox-organize`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request),
+  });
+  assert.equal(replayResponse.status, 200);
+  assert.equal((await replayResponse.json()).replayed, true);
+  assert.equal(launches.length, launchesBefore + 1, "same manager idempotency key must not launch twice");
+
+  const visibleThreads = (await (await fetch(`${baseUrl}/api/threads`)).json()).threads;
+  assert.equal(visibleThreads.some((thread) => thread.id === started.call.codexThreadId), false, "manager thread must stay out of the Run board");
+  const hiddenThreads = (await (await fetch(`${baseUrl}/api/threads?hidden=1`)).json()).threads;
+  assert.equal(hiddenThreads.some((thread) => thread.id === started.call.codexThreadId), true);
+
+  await managerLaunch.onTurnCompleted({
+    threadId: started.call.codexThreadId,
+    turnId: started.call.codexTurnId,
+    status: "completed",
+    finalMessage: JSON.stringify({
+      summary: "补全一个任务，并提示可能重复项",
+      suggestions: [
+        { kind: "update_work_item", workItemId: first.id, title: "明确客户反馈任务", reason: "标题过于宽泛", impact: "补充目标和下一步，并进入可启动", patch: { title: "归纳客户反馈并形成行动项", goal: "形成可执行的反馈清单", nextAction: "汇总最近一周反馈", tags: ["客户反馈"], stage: "explore", status: "ready" } },
+        { kind: "duplicate_candidate", workItemId: second.id, relatedWorkItemId: first.id, title: "疑似重复", reason: "两个标题表达同一反馈整理目标", impact: "仅提示，不自动合并" },
+      ],
+    }),
+    completedAt: new Date().toISOString(),
+  });
+
+  const completed = await (await fetch(`${baseUrl}/api/board-manager/calls/${started.call.id}`)).json();
+  assert.equal(completed.call.status, "completed");
+  assert.equal(completed.suggestions.length, 2);
+  assert.equal((await (await fetch(`${baseUrl}/api/work-items/${first.id}`)).json()).workItem.version, first.version, "preview must not modify Work Item");
+  const updateSuggestion = completed.suggestions.find((suggestion) => suggestion.kind === "update_work_item");
+  const duplicateSuggestion = completed.suggestions.find((suggestion) => suggestion.kind === "duplicate_candidate");
+
+  const codexApply = await fetch(`${baseUrl}/api/board-manager/calls/${started.call.id}/apply`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-actor-type": "codex", "x-actor-id": "manager", "x-codex-thread-id": started.call.codexThreadId },
+    body: JSON.stringify({ idempotencyKey: "manager-codex-apply", suggestionIds: [updateSuggestion.id] }),
+  });
+  assert.equal(codexApply.status, 403);
+
+  const duplicateApply = await fetch(`${baseUrl}/api/board-manager/calls/${started.call.id}/apply`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "manager-duplicate-apply", suggestionIds: [duplicateSuggestion.id] }),
+  });
+  assert.equal(duplicateApply.status, 409);
+  assert.equal((await duplicateApply.json()).code, "manager_suggestion_requires_manual_resolution");
+
+  const applyRequest = { idempotencyKey: "manager-user-apply", suggestionIds: [updateSuggestion.id] };
+  const appliedResponse = await fetch(`${baseUrl}/api/board-manager/calls/${started.call.id}/apply`, {
+    method: "POST", headers: { "content-type": "application/json", "x-actor-id": "wangfei" }, body: JSON.stringify(applyRequest),
+  });
+  assert.equal(appliedResponse.status, 201);
+  const applied = await appliedResponse.json();
+  assert.equal(applied.updatedWorkItems[0].status, "ready");
+  assert.equal(applied.updatedWorkItems[0].title, "归纳客户反馈并形成行动项");
+  const replayApply = await fetch(`${baseUrl}/api/board-manager/calls/${started.call.id}/apply`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(applyRequest),
+  });
+  assert.equal(replayApply.status, 200);
+  assert.equal((await replayApply.json()).replayed, true);
+
+  const audit = (await (await fetch(`${baseUrl}/api/board-manager/calls/${started.call.id}/audit`)).json()).events;
+  assert.deepEqual(audit.map((event) => [event.action, event.actorType, event.actorId]), [
+    ["requested", "user", "wangfei"],
+    ["suggestions_generated", "codex", "board-manager"],
+    ["suggestions_applied", "user", "wangfei"],
+  ]);
+
+  const third = await createInbox("manager-inbox-third", "整理支持工单");
+  const fourth = await createInbox("manager-inbox-fourth", "整理退款问题");
+  const secondStarted = await (await fetch(`${baseUrl}/api/board-manager/inbox-organize`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idempotencyKey: "manager-inbox-call-two" }),
+  })).json();
+  const secondLaunch = launches.at(-1);
+  await secondLaunch.onTurnCompleted({
+    threadId: secondStarted.call.codexThreadId, turnId: secondStarted.call.codexTurnId, status: "completed", completedAt: new Date().toISOString(),
+    finalMessage: JSON.stringify({ summary: "准备两个整理建议", suggestions: [
+      { kind: "update_work_item", workItemId: third.id, title: "补充工单目标", reason: "需要明确输出", impact: "更新目标", patch: { goal: "形成支持工单分类" } },
+      { kind: "update_work_item", workItemId: fourth.id, title: "补充退款目标", reason: "需要明确输出", impact: "更新目标", patch: { goal: "形成退款问题清单" } },
+    ] }),
+  });
+  const secondCompleted = await (await fetch(`${baseUrl}/api/board-manager/calls/${secondStarted.call.id}`)).json();
+  const changedFourth = await fetch(`${baseUrl}/api/work-items/${fourth.id}`, {
+    method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: fourth.version, description: "用户稍后修改" }),
+  });
+  assert.equal(changedFourth.status, 200);
+  const conflictApply = await fetch(`${baseUrl}/api/board-manager/calls/${secondStarted.call.id}/apply`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ idempotencyKey: "manager-conflict-apply", suggestionIds: secondCompleted.suggestions.map((suggestion) => suggestion.id) }),
+  });
+  assert.equal(conflictApply.status, 409);
+  assert.equal((await conflictApply.json()).code, "version_conflict");
+  assert.equal((await (await fetch(`${baseUrl}/api/work-items/${third.id}`)).json()).workItem.version, third.version, "one conflict must roll back the whole selected batch");
+});
+
 test("serves one attributable Work Item detail aggregate without copying thread history", async () => {
   const created = (await (await fetch(`${baseUrl}/api/work-items`, {
     method: "POST",

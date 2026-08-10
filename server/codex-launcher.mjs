@@ -102,7 +102,7 @@ export class CodexLauncher {
     });
   }
 
-  async launch({ cwd, prompt, threadId: existingThreadId = null, onThreadReady, onTurnStarted, onTurnCompleted, onLifecycleError }) {
+  async launch({ cwd, prompt, threadId: existingThreadId = null, sandbox = "workspace-write", approvalPolicy = "on-request", onThreadReady, onTurnStarted, onTurnCompleted, onLifecycleError }) {
     const child = spawn(this.command, [...this.commandArgs, "app-server", "--listen", "stdio://"], {
       cwd,
       env: this.env,
@@ -201,9 +201,9 @@ export class CodexLauncher {
         ? await request("thread/resume", { threadId: existingThreadId })
         : await request("thread/start", {
           cwd,
-          approvalPolicy: "on-request",
+          approvalPolicy,
           approvalsReviewer: "auto_review",
-          sandbox: "workspace-write",
+          sandbox,
           serviceName: "codex_task_inventory",
         });
       const threadId = started?.thread?.id;

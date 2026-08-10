@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { WipPolicy, WipSnapshot, WorkItem, WorkStatus } from "../types";
 import WorkItemDetailDrawer from "./WorkItemDetailDrawer";
+import InboxOrganizerPanel from "./InboxOrganizerPanel";
 
 type AttentionLane = "mainline" | "background" | "decision" | "review" | "parking";
 
@@ -50,6 +51,7 @@ export default function TodayWorkspace() {
   const [wipPolicy, setWipPolicy] = useState<WipPolicy | null>(null);
   const [wipSnapshot, setWipSnapshot] = useState<WipSnapshot | null>(null);
   const [showWipSettings, setShowWipSettings] = useState(false);
+  const [showInboxOrganizer, setShowInboxOrganizer] = useState(false);
   const [wipDraft, setWipDraft] = useState({ mainlineLimit: 1, backgroundRunLimit: 2, reviewLimit: 2, enforcement: "warn" as "warn" | "block" });
   const [selectedWorkItemId, setSelectedWorkItemId] = useState(() => new URLSearchParams(window.location.search).get("workItem"));
 
@@ -161,6 +163,14 @@ export default function TodayWorkspace() {
       <button disabled={!selectedCandidate || savingId !== null} onClick={() => selectedCandidate && void setTodayFocus(selectedCandidate, true)}>{savingId === selectedCandidate?.id ? "保存中…" : "设为今日主线"}</button>
     </section>
 
+    <section className="manager-action-bar">
+      <div><strong>看板管家</strong><span>Codex 先给建议，你确认后看板才会修改</span></div>
+      <button onClick={() => setShowInboxOrganizer(true)}>整理收集箱</button>
+      <button disabled title="后续里程碑">安排今天</button>
+      <button disabled title="后续里程碑">分析阻塞</button>
+      <button disabled title="后续里程碑">整理待验收</button>
+    </section>
+
     {wipPolicy && wipSnapshot && <section className="wip-policy-bar" aria-label="WIP 状态">
       <div><strong>进行中限制</strong><span>{wipPolicy.enforcement === "block" ? "达到上限后阻止新增" : "超限时提醒，不阻止操作"}</span></div>
       <WipMeter label="主线" lane={wipSnapshot.lanes.mainline}/>
@@ -184,6 +194,7 @@ export default function TodayWorkspace() {
       </section>)}
     </section>
     {showWipSettings && wipPolicy && <WipSettings draft={wipDraft} saving={savingId === "wip-policy"} onChange={setWipDraft} onClose={() => setShowWipSettings(false)} onSave={() => void saveWipPolicy()}/>}
+    {showInboxOrganizer && <InboxOrganizerPanel onClose={() => setShowInboxOrganizer(false)} onApplied={() => void load(true)}/>}
     {selectedWorkItemId && <WorkItemDetailDrawer workItemId={selectedWorkItemId} onClose={closeDetail} onChanged={() => load(true)}/>}
   </main>;
 }

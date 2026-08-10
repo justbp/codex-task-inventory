@@ -133,6 +133,53 @@ export type WipSnapshot = {
   lanes: { mainline: WipLaneSnapshot; backgroundRuns: WipLaneSnapshot; review: WipLaneSnapshot };
 };
 
+export type BoardManagerInboxItem = {
+  id: string;
+  version: number;
+  title: string;
+  summary: string;
+  goal: string;
+  nextAction: string;
+  project: string | null;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BoardManagerCall = {
+  id: string;
+  action: "inbox_organize";
+  status: "queued" | "running" | "completed" | "failed" | "uncertain";
+  input: { action: "inbox_organize"; generatedAt: string; inboxItems: BoardManagerInboxItem[] };
+  inputItemCount: number;
+  summary: string;
+  codexThreadId: string | null;
+  codexTurnId: string | null;
+  sourceUri: string | null;
+  error: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BoardManagerSuggestion = {
+  id: string;
+  callId: string;
+  kind: "update_work_item" | "duplicate_candidate";
+  workItemId: string;
+  relatedWorkItemId: string | null;
+  expectedWorkItemVersion: number;
+  title: string;
+  reason: string;
+  impact: string;
+  patch: Partial<Pick<WorkItem, "title" | "description" | "goal" | "nextAction" | "project" | "tags" | "status" | "stage">>;
+  state: "pending" | "applied";
+  appliedAt: string | null;
+  createdAt: string;
+};
+
+export type BoardManagerResult = { call: BoardManagerCall; suggestions: BoardManagerSuggestion[]; replayed?: boolean };
+
 export type CodexQuotaWindow = {
   usedPercent: number | null;
   remainingPercent: number | null;

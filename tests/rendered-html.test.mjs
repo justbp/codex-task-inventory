@@ -5,11 +5,12 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 
 test("ships the unchanged Run board and a separate Work Item today workspace", async () => {
-  const [html, workspace, todayWorkspace, detailDrawer, main, styles, packageJson] = await Promise.all([
+  const [html, workspace, todayWorkspace, detailDrawer, inboxOrganizer, main, styles, packageJson] = await Promise.all([
     readFile(new URL("index.html", root), "utf8"),
     readFile(new URL("app/components/TaskWorkspace.tsx", root), "utf8"),
     readFile(new URL("app/components/TodayWorkspace.tsx", root), "utf8"),
     readFile(new URL("app/components/WorkItemDetailDrawer.tsx", root), "utf8"),
+    readFile(new URL("app/components/InboxOrganizerPanel.tsx", root), "utf8"),
     readFile(new URL("src/main.tsx", root), "utf8"),
     readFile(new URL("app/globals.css", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
@@ -74,6 +75,14 @@ test("ships the unchanged Run board and a separate Work Item today workspace", a
   assert.match(styles, /\.today-board/);
   assert.match(styles, /\.wip-policy-bar/);
   assert.match(styles, /\.wip-settings/);
+  assert.match(todayWorkspace, /整理收集箱/);
+  assert.match(todayWorkspace, /InboxOrganizerPanel/);
+  assert.match(inboxOrganizer, /\/api\/board-manager\/inbox-organize/);
+  assert.match(inboxOrganizer, /\/api\/board-manager\/calls\/\$\{result\.call\.id\}\/apply/);
+  assert.match(inboxOrganizer, /只读取必要摘要，确认前不会修改任务/);
+  assert.match(inboxOrganizer, /管家不能启动 Run 或标记完成/);
+  assert.match(inboxOrganizer, /type="checkbox"/);
+  assert.match(styles, /\.manager-drawer/);
   assert.match(workspace, /打开工作详情/);
   assert.match(workspace, /\/today\?workItem=\$\{thread\.workItemId\}/);
   assert.match(todayWorkspace, /WorkItemDetailDrawer/);

@@ -33,6 +33,9 @@ test("CodexLauncher starts a thread, binds it, then starts a turn", async () => 
     assert.deepEqual(result, { threadId: "thread-created", turnId: "turn-created", resumed: false, deepLink: "codex://threads/thread-created" });
     const requests = messages(log);
     assert.deepEqual(requests.map((entry) => entry.method), ["initialize", "initialized", "thread/start", "turn/start"]);
+    const threadStart = requests.find((entry) => entry.method === "thread/start");
+    assert.equal(threadStart.params.sandbox, "workspace-write");
+    assert.equal(threadStart.params.approvalPolicy, "on-request");
     assert.equal(requests.at(-1).params.input[0].text, "frozen envelope");
     assert.equal(requests.at(-1).params.cwd, sandbox);
     const completed = await completion;
@@ -40,6 +43,26 @@ test("CodexLauncher starts a thread, binds it, then starts a turn", async () => 
     assert.equal(completed.turnId, "turn-created");
     assert.equal(completed.status, "completed");
     assert.match(completed.finalMessage, /等待人工验收/);
+  } finally {
+    launcher.close();
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("CodexLauncher can isolate a read-only manager call", async () => {
+  const sandbox = mkdtempSync(join(tmpdir(), "codex-launcher-read-only-"));
+  const log = join(sandbox, "messages.jsonl");
+  const launcher = new CodexLauncher({ command: process.execPath, commandArgs: [fixture], env: { FAKE_CODEX_LOG: log } });
+  try {
+    await launcher.launch({
+      cwd: sandbox,
+      prompt: "manager envelope",
+      sandbox: "read-only",
+      approvalPolicy: "never",
+    });
+    const threadStart = messages(log).find((entry) => entry.method === "thread/start");
+    assert.equal(threadStart.params.sandbox, "read-only");
+    assert.equal(threadStart.params.approvalPolicy, "never");
   } finally {
     launcher.close();
     rmSync(sandbox, { recursive: true, force: true });

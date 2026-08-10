@@ -15,6 +15,7 @@ import { createWorkReviewRepository, initWorkReviewSchema } from "./work-review.
 import { createWorkDecisionRepository, createWorkDecisionRouter, initWorkDecisionSchema } from "./work-decision.mjs";
 import { createWorkReviewActionService, initWorkReviewActionSchema } from "./work-review-action.mjs";
 import { createWipPolicyRepository, initWipPolicySchema } from "./wip-policy.mjs";
+import { createBoardManagerService, initBoardManagerSchema } from "./board-manager.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SERVER_DIR, "..");
@@ -117,6 +118,10 @@ function metadataRepository(db) {
   const launch = db.prepare(`INSERT OR REPLACE INTO thread_metadata
     (thread_id,lane,project_override,tags,priority,sort_order,pinned,hidden,note,completed_at,last_seen_completion,last_seen_interruption,review_tracking_started_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const hideManagedThread = db.prepare(`INSERT INTO thread_metadata
+    (thread_id,lane,tags,priority,sort_order,pinned,hidden,note,review_tracking_started_at,updated_at)
+    VALUES (?,'inbox','[]','medium',0,0,1,'看板管家临时调用',?,?)
+    ON CONFLICT(thread_id) DO UPDATE SET hidden=1,note='看板管家临时调用',updated_at=excluded.updated_at`);
 
   const map = (row) => {
     let tags = [];
@@ -171,6 +176,11 @@ function metadataRepository(db) {
     createFromManual(threadId, task) {
       const now = new Date().toISOString();
       launch.run(threadId, "upcoming", task.project === "未归项目" ? null : task.project, JSON.stringify(task.tags), task.priority, task.sortOrder, task.pinned ? 1 : 0, 0, task.note, null, null, null, now, now);
+      return this.get(threadId);
+    },
+    hideManagedThread(threadId) {
+      const timestamp = new Date().toISOString();
+      hideManagedThread.run(threadId, timestamp, timestamp);
       return this.get(threadId);
     },
   };
@@ -299,6 +309,7 @@ export function createTaskServer(options = {}) {
   initWorkDecisionSchema(db);
   initWorkReviewActionSchema(db);
   initWipPolicySchema(db);
+  initBoardManagerSchema(db);
   const metadata = metadataRepository(db);
   const manual = manualRepository(db);
   const workItems = createWorkItemRepository(db);
@@ -308,6 +319,13 @@ export function createTaskServer(options = {}) {
   const workReview = createWorkReviewRepository(db, workItems, workDecisions);
   migrateLegacyWork(db, workItems, monitor.list());
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
+  const boardManager = createBoardManagerService({
+    db,
+    workItems,
+    launcher,
+    cwd: resolve(options.boardManagerCwd || PROJECT_ROOT),
+    onManagerThread: (threadId) => metadata.hideManagedThread(threadId),
+  });
   const workRunLauncher = createWorkRunLauncher({ workItems, workContext, workReview, launcher, wipPolicy });
   const workDecisionRouter = createWorkDecisionRouter({ db, decisions: workDecisions, workItems, workReview, launcher });
   const workReviewActions = createWorkReviewActionService({ db, workItems, workContext, workReview, workRunLauncher });
@@ -396,6 +414,22 @@ export function createTaskServer(options = {}) {
       if (url.pathname === "/api/wip-policy/audit" && req.method === "GET") {
         return json(res, 200, { events: wipPolicy.listAudit() });
       }
+      if (url.pathname === "/api/board-manager/inbox-organize" && req.method === "POST") {
+        const result = await boardManager.organizeInbox(await parseBody(req), workItemAttribution(req));
+        return json(res, result.replayed ? 200 : 202, result);
+      }
+      if (url.pathname === "/api/board-manager/calls/latest" && req.method === "GET") {
+        return json(res, 200, { result: boardManager.latest() });
+      }
+      const managerCallMatch = url.pathname.match(/^\/api\/board-manager\/calls\/([0-9a-f-]+)$/i);
+      if (managerCallMatch && req.method === "GET") return json(res, 200, boardManager.get(managerCallMatch[1]));
+      const managerApplyMatch = url.pathname.match(/^\/api\/board-manager\/calls\/([0-9a-f-]+)\/apply$/i);
+      if (managerApplyMatch && req.method === "POST") {
+        const result = boardManager.apply(managerApplyMatch[1], await parseBody(req), workItemAttribution(req));
+        return json(res, result.replayed ? 200 : 201, result);
+      }
+      const managerAuditMatch = url.pathname.match(/^\/api\/board-manager\/calls\/([0-9a-f-]+)\/audit$/i);
+      if (managerAuditMatch && req.method === "GET") return json(res, 200, { events: boardManager.listAudit(managerAuditMatch[1]) });
       if (url.pathname === "/api/threads" && req.method === "GET") {
         workReview.reconcileMonitoredThreads(monitor.list());
         const codexThreads = createSnapshot(monitor, metadata, new Map(), { includeHidden: url.searchParams.get("hidden") === "1" });
