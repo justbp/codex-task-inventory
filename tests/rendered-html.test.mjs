@@ -17,8 +17,7 @@ test("ships the four-stage board with separate completed and favorites pages", a
     assert.match(workspace, new RegExp(label));
   }
   assert.match(workspace, /new EventSource\("\/api\/events"\)/);
-  assert.match(workspace, /\/api\/notifications\/test/);
-  assert.match(workspace, /测试 macOS 通知/);
+  assert.doesNotMatch(workspace, /\/api\/notifications\/test|测试 macOS 通知/);
   assert.match(workspace, /新建 Codex 管理/);
   assert.match(workspace, /打开管理对话/);
   assert.match(workspace, /\/api\/manager\/start/);

@@ -7,7 +7,6 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { CodexMonitor } from "./codex-monitor.mjs";
 import { buildTaskPrompt, CodexLauncher } from "./codex-launcher.mjs";
-import { MacOSNotifier } from "./macos-notifier.mjs";
 import { CodexQuotaReader } from "./codex-quota.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
@@ -284,12 +283,6 @@ function applyThreadNames(threads, threadNames) {
   });
 }
 
-export function findReviewTransitions(previousThreads, nextThreads) {
-  if (!previousThreads) return [];
-  const previousLanes = new Map(previousThreads.map((thread) => [thread.id, thread.lane]));
-  return nextThreads.filter((thread) => previousLanes.get(thread.id) === "in_progress" && thread.lane === "review");
-}
-
 const MIME_TYPES = { ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml", ".woff": "font/woff", ".woff2": "font/woff2" };
 function staticPath(distDir, pathname) {
   let decoded;
@@ -322,11 +315,9 @@ export function createTaskServer(options = {}) {
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
   const deepLinkOpener = options.deepLinkOpener || { open: openCodexDeepLink };
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
-  const notifier = options.notifier || new MacOSNotifier(options.notificationOptions);
   const distDir = resolve(options.distDir || DEFAULT_DIST);
   const subscribers = new Set();
   let lastSignature = "";
-  let previousThreads = null;
   let publishRunning = false;
   let publishPending = false;
   let threadNames = new Map();
@@ -358,14 +349,9 @@ export function createTaskServer(options = {}) {
       const threads = [...manual.list(), ...applyThreadNames(codexThreads, threadNames)];
       const signature = JSON.stringify(threads.map((item) => [item.id, item.title, item.updatedAt, item.runtimeStatus, item.lastProgressAt, item.lane, item.pinned, item.hidden]));
       if (signature === lastSignature) return;
-      const reviewTransitions = findReviewTransitions(previousThreads, threads);
-      previousThreads = threads;
       lastSignature = signature;
       const payload = `event: threads-changed\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`;
       for (const subscriber of subscribers) subscriber.write(payload);
-      for (const thread of reviewTransitions) {
-        void notifier.notifyReview(thread).catch((error) => console.error("macOS review notification failed", error));
-      }
     } catch (error) { console.error("Codex monitor refresh failed", error); }
   };
   const publishIfChanged = async () => {
@@ -388,11 +374,6 @@ export function createTaskServer(options = {}) {
       const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
       if (url.pathname === "/api/health") return json(res, 200, { ok: true, source: "codex-local-state", tokenUsage: false });
       if (url.pathname === "/api/quota" && req.method === "GET") return json(res, 200, { quota: await quotaReader.read({ force: url.searchParams.get("refresh") === "1" }) });
-      if (url.pathname === "/api/notifications/test" && req.method === "POST") {
-        const result = await notifier.notify({ title: "Codex Task Monitor", subtitle: "macOS 通知测试", body: "通知已开启，任务进入待 Review 时会提醒你。" });
-        if (!result.delivered) throw new ApiError(503, result.reason || "系统通知发送失败");
-        return json(res, 200, result);
-      }
       if (url.pathname === "/api/threads" && req.method === "GET") {
         const codexThreads = createSnapshot(monitor, metadata, new Map(), { includeHidden: url.searchParams.get("hidden") === "1" });
         await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });

@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { createTaskServer, findReviewTransitions } from "../server/index.mjs";
+import { createTaskServer } from "../server/index.mjs";
 
 const sandbox = mkdtempSync(join(tmpdir(), "codex-task-monitor-"));
 const dist = join(sandbox, "dist");
@@ -20,7 +20,6 @@ const monitoredThreads = [sample];
 const launches = [];
 const remoteNames = new Map();
 const quotaReads = [];
-const notifications = [];
 const openedLinks = [];
 const monitor = { list: () => monitoredThreads };
 const quotaReader = {
@@ -52,12 +51,8 @@ const launcher = {
   },
   close() {},
 };
-const notifier = {
-  async notify(message) { notifications.push({ kind: "test", ...message }); return { delivered: true }; },
-  async notifyReview(thread) { notifications.push({ kind: "review", id: thread.id, title: thread.title }); return { delivered: true }; },
-};
 const deepLinkOpener = { async open(deepLink) { openedLinks.push(deepLink); } };
-const server = createTaskServer({ databasePath: join(sandbox, "monitor.db"), distDir: dist, monitor, launcher, quotaReader, notifier, deepLinkOpener, pollInterval: 50, nameRefreshInterval: 0 });
+const server = createTaskServer({ databasePath: join(sandbox, "monitor.db"), distDir: dist, monitor, launcher, quotaReader, deepLinkOpener, pollInterval: 50, nameRefreshInterval: 0 });
 let baseUrl;
 
 const threadContractFields = [
@@ -95,21 +90,6 @@ test("serves Codex quota and forwards explicit refresh requests", async () => {
   assert.equal(body.quota.primary.remainingPercent, 73);
   assert.equal(body.quota.primary.windowDurationMins, 300);
   assert.deepEqual(quotaReads.at(-1), { force: true });
-});
-
-test("sends a macOS notification test through the configured notifier", async () => {
-  const response = await fetch(`${baseUrl}/api/notifications/test`, { method: "POST" });
-  assert.equal(response.status, 200);
-  assert.equal(notifications.at(-1).kind, "test");
-  assert.match(notifications.at(-1).body, /待 Review/);
-});
-
-test("detects only in-progress to review transitions and ignores the initial snapshot", () => {
-  const active = { id: "one", lane: "in_progress" };
-  const review = { id: "one", lane: "review" };
-  assert.deepEqual(findReviewTransitions(null, [review]), []);
-  assert.deepEqual(findReviewTransitions([active], [review]), [review]);
-  assert.deepEqual(findReviewTransitions([{ id: "one", lane: "completed" }], [review]), []);
 });
 
 test("uses Codex runtime state as the authoritative in-progress lane", async () => {
