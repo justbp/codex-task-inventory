@@ -21,6 +21,7 @@ const launches = [];
 const remoteNames = new Map();
 const quotaReads = [];
 const notifications = [];
+const openedLinks = [];
 const monitor = { list: () => monitoredThreads };
 const quotaReader = {
   async read(options) {
@@ -55,7 +56,8 @@ const notifier = {
   async notify(message) { notifications.push({ kind: "test", ...message }); return { delivered: true }; },
   async notifyReview(thread) { notifications.push({ kind: "review", id: thread.id, title: thread.title }); return { delivered: true }; },
 };
-const server = createTaskServer({ databasePath: join(sandbox, "monitor.db"), distDir: dist, monitor, launcher, quotaReader, notifier, pollInterval: 50, nameRefreshInterval: 0 });
+const deepLinkOpener = { async open(deepLink) { openedLinks.push(deepLink); } };
+const server = createTaskServer({ databasePath: join(sandbox, "monitor.db"), distDir: dist, monitor, launcher, quotaReader, notifier, deepLinkOpener, pollInterval: 50, nameRefreshInterval: 0 });
 let baseUrl;
 
 const threadContractFields = [
@@ -152,6 +154,8 @@ test("opens a fresh hidden manager conversation with only the skill instruction"
   assert.equal(response.status, 200);
   const launched = await response.json();
   assert.match(launched.deepLink, /^codex:\/\/threads\//);
+  assert.equal(launched.opened, true);
+  assert.equal(openedLinks.at(-1), launched.deepLink);
   assert.equal(launches.at(-1).cwd.endsWith("codex-task-inventory"), true);
   assert.match(launches.at(-1).prompt, /^\$manage-codex-board/);
   assert.doesNotMatch(launches.at(-1).prompt, /Context Envelope|验收标准|执行计划/);

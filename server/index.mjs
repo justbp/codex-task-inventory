@@ -1,6 +1,7 @@
 import { createReadStream, existsSync, mkdirSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -20,6 +21,17 @@ const MANAGER_PROMPT = [
   "$manage-codex-board",
   "读取当前 Codex 看板，先告诉我最需要关注的事项。除非我明确要求，否则不要创建或启动任务。",
 ].join("\n\n");
+
+export function openCodexDeepLink(deepLink) {
+  return new Promise((resolveOpen, rejectOpen) => {
+    const child = spawn("/usr/bin/open", [deepLink], { detached: true, stdio: "ignore" });
+    child.once("error", rejectOpen);
+    child.once("spawn", () => {
+      child.unref();
+      resolveOpen();
+    });
+  });
+}
 
 class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -289,6 +301,7 @@ export function createTaskServer(options = {}) {
   const manual = manualRepository(db);
   const monitor = options.monitor || new CodexMonitor(options.monitorOptions);
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
+  const deepLinkOpener = options.deepLinkOpener || { open: openCodexDeepLink };
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
   const notifier = options.notifier || new MacOSNotifier(options.notificationOptions);
   const distDir = resolve(options.distDir || DEFAULT_DIST);
@@ -369,8 +382,9 @@ export function createTaskServer(options = {}) {
       if (url.pathname === "/api/manager/start" && req.method === "POST") {
         const launched = await launcher.launch({ cwd: PROJECT_ROOT, prompt: MANAGER_PROMPT });
         metadata.createManaged(launched.threadId);
+        await deepLinkOpener.open(launched.deepLink);
         void publishIfChanged();
-        return json(res, 200, launched);
+        return json(res, 200, { ...launched, opened: true });
       }
       if (url.pathname === "/api/items" && req.method === "POST") return json(res, 201, { item: manual.create(await parseBody(req)) });
       if (url.pathname === "/api/items/batch" && req.method === "POST") {

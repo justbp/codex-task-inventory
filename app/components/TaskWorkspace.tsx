@@ -125,6 +125,7 @@ export default function TaskWorkspace() {
   const [createLane, setCreateLane] = useState<"inbox" | "upcoming" | null>(null);
   const [reviewSelection, setReviewSelection] = useState<Set<string>>(new Set());
   const [managerLaunching, setManagerLaunching] = useState(false);
+  const [managerOpened, setManagerOpened] = useState(false);
   const [visibleCounts, setVisibleCounts] = useState<Record<TaskLane, number>>({ inbox: 20, upcoming: 20, in_progress: 20, review: 20, completed: 20 });
 
   const load = useCallback(async (quiet = false) => {
@@ -205,9 +206,11 @@ export default function TaskWorkspace() {
   async function startManager() {
     setManagerLaunching(true);
     try {
-      const result = await api<{ deepLink: string }>("/api/manager/start", { method: "POST", body: "{}" });
+      const result = await api<{ opened: boolean }>("/api/manager/start", { method: "POST", body: "{}" });
+      if (!result.opened) throw new Error("Codex 对话已创建，但未能打开 Codex App");
       setError("");
-      window.location.href = result.deepLink;
+      setManagerOpened(true);
+      window.setTimeout(() => setManagerOpened(false), 2500);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "无法启动管理 Codex");
     } finally { setManagerLaunching(false); }
@@ -219,7 +222,7 @@ export default function TaskWorkspace() {
     <header className="topbar">
       <div className="brand-area"><div className="brand"><span className="brand-mark"><img src="/app-icon-192.png" alt=""/></span><div><strong>Codex Task Monitor</strong><span>本地任务盘点</span></div></div><QuotaBadge quota={quota} loading={quotaLoading} error={quotaError}/></div>
       <label className="search-box"><Icon name="search"/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对话、项目或路径"/></label>
-      <div className="top-actions"><button className="manager-action" disabled={managerLaunching} onClick={() => void startManager()}><Icon name="manage"/><span>{managerLaunching ? "正在打开…" : "找 Codex 管理"}</span></button><button className="icon-button" onClick={() => void testNotification()} title="测试 macOS 通知" aria-label="测试 macOS 通知"><Icon name="bell"/></button><button className="icon-button" onClick={() => void Promise.all([load(), loadQuota(true)])} title="刷新任务和额度"><Icon name="refresh"/></button></div>
+      <div className="top-actions"><button className="manager-action" disabled={managerLaunching} onClick={() => void startManager()}><Icon name="manage"/><span>{managerLaunching ? "正在打开…" : managerOpened ? "已打开 Codex" : "找 Codex 管理"}</span></button><button className="icon-button" onClick={() => void testNotification()} title="测试 macOS 通知" aria-label="测试 macOS 通知"><Icon name="bell"/></button><button className="icon-button" onClick={() => void Promise.all([load(), loadQuota(true)])} title="刷新任务和额度"><Icon name="refresh"/></button></div>
     </header>
     <section className="page-heading">
       <nav className="page-tabs" aria-label="任务页面"><a className={!listPage ? "active" : ""} href="/">任务看板</a><a className={completedPage ? "active" : ""} href="/completed">已完成 <b>{threads.filter((item) => item.lane === "completed").length}</b></a><a className={favoritesPage ? "active" : ""} href="/favorites">收藏 <b>{threads.filter((item) => item.lane === "completed" && item.pinned).length}</b></a></nav>
