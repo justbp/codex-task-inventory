@@ -12,6 +12,7 @@ button,a { -webkit-tap-highlight-color: transparent; }
 .top-actions { justify-self:end; display:flex; gap:8px; }.add-task { white-space:nowrap; }
 .manager-action { min-height:38px; padding:0 12px; display:inline-flex; align-items:center; gap:7px; border:1px solid #292d33; border-radius:10px; background:#292d33; color:white; cursor:pointer; white-space:nowrap; font-size:11px; }.manager-action:hover { background:#171a1f; }.manager-action:disabled { opacity:.55; cursor:wait; }
 .manager-create { border-color:var(--line); background:white; color:#4f5660; }.manager-create:hover { background:#f3f4f2; }
+.manager-controls { display:flex; align-items:center; gap:8px; }
 .page-heading { padding:12px 34px 9px; display:flex; justify-content:space-between; align-items:flex-end; gap:18px; }.eyebrow { margin:0 0 8px; color:#3976d2!important; font-size:9px!important; font-weight:750; letter-spacing:.16em; }.page-heading h1 { margin:0; font-family:Georgia,"Songti SC",serif; font-size:30px; font-weight:600; }.page-heading p { margin:7px 0 0; color:var(--quiet); font-size:11px; }
 .summary-strip { display:flex; align-items:center; gap:13px; padding:7px 13px; border:1px solid var(--line); border-radius:10px; background:white; }.summary-strip div { display:flex; align-items:baseline; gap:6px; }.summary-strip span { color:#898f97; font-size:9px; }.summary-strip strong { font-size:17px; font-weight:600; }.summary-strip i { width:1px; height:17px; background:var(--line); }
 .filterbar { height:42px; margin:0 34px 12px; padding:0 10px; display:flex; align-items:center; gap:9px; border:1px solid var(--line); border-radius:10px; background:#fff; }.source-pill { display:flex; align-items:center; gap:7px; padding:5px 8px; border-radius:7px; background:#edf8f0; color:#397852; font-size:10px; font-weight:650; }.source-pill i { width:7px; height:7px; border-radius:50%; background:#43a66a; box-shadow:0 0 0 3px rgba(67,166,106,.13); }.filterbar select { height:28px; padding:0 28px 0 9px; border:1px solid var(--line); border-radius:7px; background:white; color:#5d636c; font-size:10px; }.task-total { margin-left:auto; color:#92979e; font-size:10px; }
@@ -44,6 +45,7 @@ button,a { -webkit-tap-highlight-color: transparent; }
 .primary-button,.secondary-button { font-size:12px; }.modal-header p,.form-error { font-size:12px; }
 
 .page-heading { justify-content:space-between; align-items:center; }
+.page-heading .summary-strip { margin-left:auto; }
 .page-tabs { display:flex; gap:3px; padding:3px; border:1px solid var(--line); border-radius:9px; background:#eceeeb; }
 .page-tabs a { min-height:28px; padding:0 10px; display:flex; align-items:center; gap:6px; border-radius:6px; color:#747b84; text-decoration:none; font-size:11px; font-weight:650; }
 .page-tabs a.active { background:white; color:#272c34; box-shadow:0 1px 4px rgba(30,35,42,.08); }
@@ -57,7 +59,7 @@ button,a { -webkit-tap-highlight-color: transparent; }
 .completed-empty span { display:grid; width:42px; height:42px; margin:0 auto 13px; place-items:center; border-radius:50%; background:#e7f0e9; color:#55936d; font-size:20px; }
 .completed-empty strong { display:block; color:#666d76; font-size:14px; }.completed-empty p { margin:7px 0 0; font-size:12px; }
 
-@media(max-width:900px){.page-heading{align-items:stretch}.page-tabs{width:max-content}.completed-page{padding:0 15px 24px}.filterbar.with-date-filter{height:auto;min-height:42px;padding-block:6px;flex-wrap:wrap}.filterbar.with-date-filter .date-segment{order:2;width:100%;margin-left:0}.filterbar.with-date-filter .task-total{margin-left:auto}.completed-grid{grid-template-columns:1fr}}
+@media(max-width:900px){.page-heading{align-items:stretch;flex-wrap:wrap}.page-tabs{width:max-content}.manager-controls{margin-left:auto}.completed-page{padding:0 15px 24px}.filterbar.with-date-filter{height:auto;min-height:42px;padding-block:6px;flex-wrap:wrap}.filterbar.with-date-filter .date-segment{order:2;width:100%;margin-left:0}.filterbar.with-date-filter .task-total{margin-left:auto}.completed-grid{grid-template-columns:1fr}}
 
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 
