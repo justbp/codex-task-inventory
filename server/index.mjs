@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { CodexMonitor } from "./codex-monitor.mjs";
 import { buildTaskPrompt, CodexLauncher } from "./codex-launcher.mjs";
@@ -96,6 +96,11 @@ export function initMetadata(db) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS manager_bindings (
+      project_path TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
   const manualColumns = new Set(db.prepare("PRAGMA table_info(manual_tasks)").all().map((column) => column.name));
   if (!manualColumns.has("cwd")) db.exec("ALTER TABLE manual_tasks ADD COLUMN cwd TEXT");
@@ -174,10 +179,23 @@ function metadataRepository(db) {
       launch.run(threadId, "upcoming", task.project === "未归项目" ? null : task.project, JSON.stringify(task.tags), task.priority, task.sortOrder, task.pinned ? 1 : 0, 0, task.note, null, null, null, now, now);
       return this.get(threadId);
     },
-    createManaged(threadId) {
+    createManaged(threadId, project) {
       const now = new Date().toISOString();
-      launch.run(threadId, "upcoming", null, "[]", "medium", 0, 0, 1, "", null, null, null, now, now);
+      launch.run(threadId, "upcoming", project, "[]", "medium", 0, 0, 1, "", null, null, null, now, now);
       return this.get(threadId);
+    },
+  };
+}
+
+function managerRepository(db) {
+  const find = db.prepare("SELECT thread_id, updated_at FROM manager_bindings WHERE project_path = ?");
+  const bind = db.prepare(`INSERT INTO manager_bindings (project_path, thread_id, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(project_path) DO UPDATE SET thread_id=excluded.thread_id, updated_at=excluded.updated_at`);
+  return {
+    get(projectPath) { return find.get(projectPath) || null; },
+    bind(projectPath, threadId) {
+      bind.run(projectPath, threadId, new Date().toISOString());
+      return this.get(projectPath);
     },
   };
 }
@@ -299,6 +317,7 @@ export function createTaskServer(options = {}) {
   initMetadata(db);
   const metadata = metadataRepository(db);
   const manual = manualRepository(db);
+  const managers = managerRepository(db);
   const monitor = options.monitor || new CodexMonitor(options.monitorOptions);
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
   const deepLinkOpener = options.deepLinkOpener || { open: openCodexDeepLink };
@@ -379,12 +398,23 @@ export function createTaskServer(options = {}) {
         await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
         return json(res, 200, { threads: [...manual.list(), ...applyThreadNames(codexThreads, threadNames)] });
       }
+      if (url.pathname === "/api/manager" && req.method === "GET") {
+        const current = managers.get(PROJECT_ROOT);
+        return json(res, 200, { manager: current ? { ...current, project: basename(PROJECT_ROOT), cwd: PROJECT_ROOT } : null });
+      }
       if (url.pathname === "/api/manager/start" && req.method === "POST") {
         const launched = await launcher.launch({ cwd: PROJECT_ROOT, prompt: MANAGER_PROMPT });
-        metadata.createManaged(launched.threadId);
-        await deepLinkOpener.open(launched.deepLink);
+        metadata.createManaged(launched.threadId, basename(PROJECT_ROOT));
+        managers.bind(PROJECT_ROOT, launched.threadId);
         void publishIfChanged();
-        return json(res, 200, { ...launched, opened: true });
+        return json(res, 200, { ...launched, project: basename(PROJECT_ROOT), cwd: PROJECT_ROOT });
+      }
+      if (url.pathname === "/api/manager/open" && req.method === "POST") {
+        const current = managers.get(PROJECT_ROOT);
+        if (!current) throw new ApiError(404, "当前项目还没有管理对话，请先新建");
+        const deepLink = `codex://threads/${current.thread_id}`;
+        await deepLinkOpener.open(deepLink);
+        return json(res, 200, { threadId: current.thread_id, deepLink, opened: true, project: basename(PROJECT_ROOT), cwd: PROJECT_ROOT });
       }
       if (url.pathname === "/api/items" && req.method === "POST") return json(res, 201, { item: manual.create(await parseBody(req)) });
       if (url.pathname === "/api/items/batch" && req.method === "POST") {

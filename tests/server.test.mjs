@@ -149,16 +149,26 @@ test("keeps the deprecated task endpoint unavailable", async () => {
   assert.equal((await fetch(`${baseUrl}/api/tasks`, { method: "POST" })).status, 404);
 });
 
-test("opens a fresh hidden manager conversation with only the skill instruction", async () => {
+test("creates a project-bound manager conversation and opens the same conversation separately", async () => {
+  assert.equal((await (await fetch(`${baseUrl}/api/manager`)).json()).manager, null);
   const response = await fetch(`${baseUrl}/api/manager/start`, { method: "POST" });
   assert.equal(response.status, 200);
   const launched = await response.json();
   assert.match(launched.deepLink, /^codex:\/\/threads\//);
-  assert.equal(launched.opened, true);
-  assert.equal(openedLinks.at(-1), launched.deepLink);
   assert.equal(launches.at(-1).cwd.endsWith("codex-task-inventory"), true);
+  assert.equal(launched.project, "codex-task-inventory");
   assert.match(launches.at(-1).prompt, /^\$manage-codex-board/);
   assert.doesNotMatch(launches.at(-1).prompt, /Context Envelope|验收标准|执行计划/);
+
+  const binding = (await (await fetch(`${baseUrl}/api/manager`)).json()).manager;
+  assert.equal(binding.thread_id, launched.threadId);
+  assert.equal(binding.project, "codex-task-inventory");
+
+  const openResponse = await fetch(`${baseUrl}/api/manager/open`, { method: "POST" });
+  assert.equal(openResponse.status, 200);
+  const opened = await openResponse.json();
+  assert.equal(opened.threadId, launched.threadId);
+  assert.equal(openedLinks.at(-1), launched.deepLink);
 
   const visible = await (await fetch(`${baseUrl}/api/threads`)).json();
   assert.equal(visible.threads.some((item) => item.id === launched.threadId), false);
