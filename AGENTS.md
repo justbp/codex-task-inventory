@@ -1,12 +1,12 @@
 # Repository instructions
 
-## Codex Workbench design
+## Product boundary
 
-Before planning or implementing changes involving work items, Codex runs, board-manager AI, task states, review, recovery, context assembly, or task/thread relationships:
+Before changing task capture, Codex launch, monitoring, review, notifications, or completion behavior:
 
 1. Read `docs/CODEX_WORKBENCH_DESIGN.md` completely.
-2. State which numbered product invariants (`I-01` through `I-15`) the change touches.
-3. Include verification that those invariants remain satisfied.
-4. Stop and ask the user before changing or contradicting an invariant.
+2. State which product invariants (`I-01` through `I-06`) the change touches.
+3. Verify the simple capture → monitor → intervene → review path remains usable.
+4. Stop and ask the user before contradicting an invariant.
 
-Do not treat a Codex thread as the source of truth for a work item. Do not allow Codex self-verification to move a work item directly to `done`.
+Keep this product a lightweight Codex task monitor. Do not introduce Work Item, Run, Context Envelope, Recovery Point, Decision Request, WIP, or board-manager abstractions unless the user explicitly changes the product boundary.
