@@ -8,7 +8,7 @@ const COLUMNS: { id: TaskLane; title: string; subtitle: string }[] = [
   { id: "review", title: "待 Review", subtitle: "新一轮执行已经结束" },
 ];
 
-type IconName = "logo" | "search" | "refresh" | "open" | "folder" | "pulse" | "close" | "check" | "plus" | "play" | "pin" | "star" | "trash" | "bell";
+type IconName = "logo" | "search" | "refresh" | "open" | "folder" | "pulse" | "close" | "check" | "plus" | "play" | "pin" | "star" | "trash" | "bell" | "manage";
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactNode> = {
     logo: <><rect x="3" y="3" width="18" height="18" rx="6"/><path d="M8 12h8M12 8v8"/></>,
@@ -25,6 +25,7 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     star: <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/>,
     trash: <><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/><path d="M10 11v5M14 11v5"/></>,
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></>,
+    manage: <><circle cx="9" cy="9" r="4"/><path d="M3 20c.7-3.3 2.7-5 6-5s5.3 1.7 6 5M16 8h5M18.5 5.5v5"/></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>{paths[name]}</svg>;
 }
@@ -123,6 +124,7 @@ export default function TaskWorkspace() {
   const [dragging, setDragging] = useState<string | null>(null);
   const [createLane, setCreateLane] = useState<"inbox" | "upcoming" | null>(null);
   const [reviewSelection, setReviewSelection] = useState<Set<string>>(new Set());
+  const [managerLaunching, setManagerLaunching] = useState(false);
   const [visibleCounts, setVisibleCounts] = useState<Record<TaskLane, number>>({ inbox: 20, upcoming: 20, in_progress: 20, review: 20, completed: 20 });
 
   const load = useCallback(async (quiet = false) => {
@@ -200,13 +202,24 @@ export default function TaskWorkspace() {
     }
   }
 
+  async function startManager() {
+    setManagerLaunching(true);
+    try {
+      const result = await api<{ deepLink: string }>("/api/manager/start", { method: "POST", body: "{}" });
+      setError("");
+      window.location.href = result.deepLink;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "无法启动管理 Codex");
+    } finally { setManagerLaunching(false); }
+  }
+
   const activeCount = threads.filter((item) => item.runtimeStatus === "active").length;
   const waitingCount = threads.filter((item) => item.runtimeStatus === "waiting").length;
   return <main className="workspace-shell">
     <header className="topbar">
       <div className="brand-area"><div className="brand"><span className="brand-mark"><img src="/app-icon-192.png" alt=""/></span><div><strong>Codex Task Monitor</strong><span>本地任务盘点</span></div></div><QuotaBadge quota={quota} loading={quotaLoading} error={quotaError}/></div>
       <label className="search-box"><Icon name="search"/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对话、项目或路径"/></label>
-      <div className="top-actions"><button className="icon-button" onClick={() => void testNotification()} title="测试 macOS 通知" aria-label="测试 macOS 通知"><Icon name="bell"/></button><button className="icon-button" onClick={() => void Promise.all([load(), loadQuota(true)])} title="刷新任务和额度"><Icon name="refresh"/></button></div>
+      <div className="top-actions"><button className="manager-action" disabled={managerLaunching} onClick={() => void startManager()}><Icon name="manage"/><span>{managerLaunching ? "正在打开…" : "找 Codex 管理"}</span></button><button className="icon-button" onClick={() => void testNotification()} title="测试 macOS 通知" aria-label="测试 macOS 通知"><Icon name="bell"/></button><button className="icon-button" onClick={() => void Promise.all([load(), loadQuota(true)])} title="刷新任务和额度"><Icon name="refresh"/></button></div>
     </header>
     <section className="page-heading">
       <nav className="page-tabs" aria-label="任务页面"><a className={!listPage ? "active" : ""} href="/">任务看板</a><a className={completedPage ? "active" : ""} href="/completed">已完成 <b>{threads.filter((item) => item.lane === "completed").length}</b></a><a className={favoritesPage ? "active" : ""} href="/favorites">收藏 <b>{threads.filter((item) => item.lane === "completed" && item.pinned).length}</b></a></nav>

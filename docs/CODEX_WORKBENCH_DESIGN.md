@@ -41,7 +41,9 @@ Codex 完成或中断后进入待 Review。只有用户确认，任务才进入�
 
 ### I-06：保持简单产品边界
 
-不引入 Work Item、Run、Context Envelope、Recovery Point、Decision Request、今日工作台、WIP 策略或 Board Manager。新增功能必须直接改善监控、介入或人工检查路径。
+允许外部 Skill 在独立 Codex 对话中按需读取看板、提出建议，并在用户明确要求时调用现有接口启动子任务。看板内部不引入 Work Item、Run、Context Envelope、Recovery Point、Decision Request、今日工作台、WIP 策略或 AI 管理系统。
+
+管理对话不得成为任务事实来源；每次可以新建并重新读取紧凑看板快照。定时巡检只能读取和建议，不能自动创建、启动或验收任务。
 
 ## 验收标准
 

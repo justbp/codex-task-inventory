@@ -10,6 +10,7 @@
 - 任务从“进行中”进入“待 Review”时，由常驻服务通过 macOS 通知中心提醒；首次启动只建立状态基线，不会为已有待 Review 任务补发通知。
 - 通过 Codex App Server 的 `account/rateLimits/read` 读取当前额度窗口，在顶部展示剩余百分比和刷新时间；结果缓存一分钟，避免频繁请求。
 - 卡片使用 `codex://threads/{threadId}` 回到对应 Codex 对话。
+- 顶部“找 Codex 管理”会打开独立管理对话；它通过 `$manage-codex-board` 读取紧凑看板快照，只有收到明确指令才启动子任务。
 - Codex 对话名称只读同步；请在 Codex 中改名，看板不提供改名入口。
 - 本地 `data/monitor.db` 仅保存项目覆盖、标签、优先级、排布、隐藏、备注和完成确认。
 - 收集箱、待办列只展示手工事项，不再灌入历史 Codex 对话。

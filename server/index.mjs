@@ -16,6 +16,10 @@ const DEFAULT_DIST = join(PROJECT_ROOT, "dist");
 const LANES = ["inbox", "upcoming", "review", "completed"];
 const PRIORITIES = ["low", "medium", "high"];
 const MAX_BODY_BYTES = 256_000;
+const MANAGER_PROMPT = [
+  "$manage-codex-board",
+  "读取当前 Codex 看板，先告诉我最需要关注的事项。除非我明确要求，否则不要创建或启动任务。",
+].join("\n\n");
 
 class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -156,6 +160,11 @@ function metadataRepository(db) {
     createFromManual(threadId, task) {
       const now = new Date().toISOString();
       launch.run(threadId, "upcoming", task.project === "未归项目" ? null : task.project, JSON.stringify(task.tags), task.priority, task.sortOrder, task.pinned ? 1 : 0, 0, task.note, null, null, null, now, now);
+      return this.get(threadId);
+    },
+    createManaged(threadId) {
+      const now = new Date().toISOString();
+      launch.run(threadId, "upcoming", null, "[]", "medium", 0, 0, 1, "", null, null, null, now, now);
       return this.get(threadId);
     },
   };
@@ -356,6 +365,12 @@ export function createTaskServer(options = {}) {
         const codexThreads = createSnapshot(monitor, metadata, new Map(), { includeHidden: url.searchParams.get("hidden") === "1" });
         await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
         return json(res, 200, { threads: [...manual.list(), ...applyThreadNames(codexThreads, threadNames)] });
+      }
+      if (url.pathname === "/api/manager/start" && req.method === "POST") {
+        const launched = await launcher.launch({ cwd: PROJECT_ROOT, prompt: MANAGER_PROMPT });
+        metadata.createManaged(launched.threadId);
+        void publishIfChanged();
+        return json(res, 200, launched);
       }
       if (url.pathname === "/api/items" && req.method === "POST") return json(res, 201, { item: manual.create(await parseBody(req)) });
       if (url.pathname === "/api/items/batch" && req.method === "POST") {

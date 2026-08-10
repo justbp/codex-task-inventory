@@ -36,7 +36,7 @@ const launcher = {
   async listThreadNames() { return new Map(remoteNames); },
   async launch(input) {
     launches.push(input);
-    const id = "019fc79b-3541-7853-a09a-6bcd9ced9999";
+    const id = `019fc79b-3541-7853-a09a-${String(launches.length).padStart(12, "0")}`;
     monitoredThreads.push({
       ...sample,
       id,
@@ -145,6 +145,21 @@ test("uses an external Codex rename even when the state database title is stale"
 
 test("keeps the deprecated task endpoint unavailable", async () => {
   assert.equal((await fetch(`${baseUrl}/api/tasks`, { method: "POST" })).status, 404);
+});
+
+test("opens a fresh hidden manager conversation with only the skill instruction", async () => {
+  const response = await fetch(`${baseUrl}/api/manager/start`, { method: "POST" });
+  assert.equal(response.status, 200);
+  const launched = await response.json();
+  assert.match(launched.deepLink, /^codex:\/\/threads\//);
+  assert.equal(launches.at(-1).cwd.endsWith("codex-task-inventory"), true);
+  assert.match(launches.at(-1).prompt, /^\$manage-codex-board/);
+  assert.doesNotMatch(launches.at(-1).prompt, /Context Envelope|验收标准|执行计划/);
+
+  const visible = await (await fetch(`${baseUrl}/api/threads`)).json();
+  assert.equal(visible.threads.some((item) => item.id === launched.threadId), false);
+  const all = await (await fetch(`${baseUrl}/api/threads?hidden=1`)).json();
+  assert.equal(all.threads.find((item) => item.id === launched.threadId).hidden, true);
 });
 
 test("starts a manual task in Codex and replaces the manual card with its real thread", async () => {
