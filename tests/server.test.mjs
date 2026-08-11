@@ -92,6 +92,29 @@ test("serves Codex quota and forwards explicit refresh requests", async () => {
   assert.deepEqual(quotaReads.at(-1), { force: true });
 });
 
+test("stores a disposable attention recommendation outside task state", async () => {
+  assert.equal((await (await fetch(`${baseUrl}/api/attention-advice`)).json()).advice, null);
+  const before = (await (await fetch(`${baseUrl}/api/threads`)).json()).threads.length;
+  const response = await fetch(`${baseUrl}/api/attention-advice`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      attentionToken: "token-1",
+      headline: "验收两个结果",
+      focus: "先检查草稿 PR",
+      background: "无运行任务",
+      nextCheck: "验收后",
+      primaryTaskId: sample.id,
+      generatedAt: "2026-08-11T03:10:00.000Z",
+    }),
+  });
+  assert.equal(response.status, 200);
+  const advice = (await response.json()).advice;
+  assert.equal(advice.headline, "验收两个结果");
+  assert.equal(advice.primaryTaskId, sample.id);
+  assert.equal((await (await fetch(`${baseUrl}/api/threads`)).json()).threads.length, before);
+});
+
 test("uses Codex runtime state as the authoritative in-progress lane", async () => {
   const first = await (await fetch(`${baseUrl}/api/threads`)).json();
   assert.equal(first.threads.length, 1);

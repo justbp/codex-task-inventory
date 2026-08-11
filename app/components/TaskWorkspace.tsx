@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import type { CodexQuota, CodexQuotaWindow, CodexThread, Priority, TaskLane } from "../types";
+import type { AttentionAdvice, CodexQuota, CodexQuotaWindow, CodexThread, Priority, TaskLane } from "../types";
 
 const COLUMNS: { id: TaskLane; title: string; subtitle: string }[] = [
   { id: "inbox", title: "收集箱", subtitle: "新发现的 Codex 任务" },
@@ -79,6 +79,33 @@ function QuotaBadge({ quota, loading, error }: { quota: CodexQuota | null; loadi
   </div>;
 }
 
+function adviceTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  return `${date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })} 评估`;
+}
+
+function AttentionAdviceCard({ advice, expanded, onToggle, onOpenPrimary }: { advice: AttentionAdvice | null; expanded: boolean; onToggle: () => void; onOpenPrimary: (() => void) | null }) {
+  if (!advice) return <section className="attention-advice attention-empty" aria-label="注意力建议">
+    <div className="attention-kicker"><Icon name="pulse" size={15}/><span>下一小时建议</span></div>
+    <div className="attention-main"><strong>等待第一次注意力评估</strong><p>定时 Skill 生成建议后会显示在这里；看板不会自动启动或验收任务。</p></div>
+  </section>;
+  const details = [
+    ["你的主线", advice.focus],
+    ["Codex 后台", advice.background],
+    ["完成后", advice.after],
+    ["暂不关注", advice.parked],
+    ["下次检查", advice.nextCheck],
+  ].filter((item) => item[1]);
+  return <section className={`attention-advice${expanded ? " is-expanded" : ""}`} aria-label="注意力建议">
+    <div className="attention-kicker"><Icon name="pulse" size={15}/><span>下一小时建议</span><time>{adviceTime(advice.generatedAt)}</time></div>
+    <div className="attention-main"><strong>{advice.headline}</strong><p>{advice.focus}</p></div>
+    <div className="attention-meta">{advice.background && <span><b>Codex 后台</b>{advice.background}</span>}{advice.nextCheck && <span><b>下次评估</b>{advice.nextCheck}</span>}</div>
+    <div className="attention-actions">{onOpenPrimary && <button onClick={onOpenPrimary}>打开第一项</button>}<button onClick={onToggle}>{expanded ? "收起" : "展开"}</button></div>
+    {expanded && <div className="attention-details">{details.map(([label, value]) => <div key={label}><b>{label}</b><p>{value}</p></div>)}{advice.risk && <div className="attention-risk"><b>注意</b><p>{advice.risk}</p></div>}</div>}
+  </section>;
+}
+
 function inDoneRange(thread: CodexThread, range: string) {
   if (range === "all") return true;
   const date = new Date(thread.completedAt || thread.updatedAt);
@@ -115,6 +142,8 @@ export default function TaskWorkspace() {
   const [quota, setQuota] = useState<CodexQuota | null>(null);
   const [quotaLoading, setQuotaLoading] = useState(true);
   const [quotaError, setQuotaError] = useState("");
+  const [attentionAdvice, setAttentionAdvice] = useState<AttentionAdvice | null>(null);
+  const [adviceExpanded, setAdviceExpanded] = useState(false);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [project, setProject] = useState("all");
@@ -151,7 +180,14 @@ export default function TaskWorkspace() {
     } finally { setQuotaLoading(false); }
   }, []);
 
-  useEffect(() => { void load(); const events = new EventSource("/api/events"); events.addEventListener("threads-changed", () => void load(true)); return () => events.close(); }, [load]);
+  const loadAttentionAdvice = useCallback(async () => {
+    try {
+      const data = await api<{ advice: AttentionAdvice | null }>("/api/attention-advice");
+      setAttentionAdvice(data.advice);
+    } catch { setAttentionAdvice(null); }
+  }, []);
+
+  useEffect(() => { void load(); void loadAttentionAdvice(); const events = new EventSource("/api/events"); events.addEventListener("threads-changed", () => void load(true)); events.addEventListener("attention-advice-changed", () => void loadAttentionAdvice()); return () => events.close(); }, [load, loadAttentionAdvice]);
   useEffect(() => { void loadQuota(); const timer = window.setInterval(() => void loadQuota(), 60_000); return () => window.clearInterval(timer); }, [loadQuota]);
   useEffect(() => { void api<{ manager: { thread_id: string } | null }>("/api/manager").then((result) => setManagerAvailable(Boolean(result.manager))).catch(() => setManagerAvailable(false)); }, []);
 
@@ -226,13 +262,22 @@ export default function TaskWorkspace() {
     <header className="topbar">
       <div className="brand-area"><div className="brand"><span className="brand-mark"><img src="/app-icon-192.png" alt=""/></span><div><strong>Codex Task Monitor</strong><span>本地任务盘点</span></div></div><QuotaBadge quota={quota} loading={quotaLoading} error={quotaError}/></div>
       <label className="search-box"><Icon name="search"/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对话、项目或路径"/></label>
-      <div className="top-actions"><button className="icon-button" onClick={() => void Promise.all([load(), loadQuota(true)])} title="刷新任务和额度"><Icon name="refresh"/></button></div>
+      <div className="top-actions"><button className="icon-button" onClick={() => void Promise.all([load(), loadQuota(true), loadAttentionAdvice()])} title="刷新任务、额度和建议"><Icon name="refresh"/></button></div>
     </header>
     <section className="page-heading">
       <nav className="page-tabs" aria-label="任务页面"><a className={!listPage ? "active" : ""} href="/">任务看板</a><a className={completedPage ? "active" : ""} href="/completed">已完成 <b>{threads.filter((item) => item.lane === "completed").length}</b></a><a className={favoritesPage ? "active" : ""} href="/favorites">收藏 <b>{threads.filter((item) => item.lane === "completed" && item.pinned).length}</b></a></nav>
       <div className="manager-controls"><button className="manager-action manager-create" disabled={managerLaunching} onClick={() => void startManager()}><Icon name="plus"/><span>{managerLaunching ? "正在新建…" : "新建 Codex 管理"}</span></button><button className="manager-action" disabled={!managerAvailable || managerOpening} onClick={() => void openManager()}><Icon name="manage"/><span>{managerOpening ? "正在打开…" : managerOpened ? "已打开 Codex" : "打开管理对话"}</span></button></div>
       <div className="summary-strip"><div><span>任务</span><strong>{threads.length}</strong></div><i/><div><span>执行中</span><strong>{activeCount}</strong></div><i/><div><span>等待我</span><strong>{waitingCount}</strong></div><i/><div><span>待检查</span><strong>{threads.filter((item) => item.lane === "review").length}</strong></div></div>
     </section>
+    {!listPage && <AttentionAdviceCard
+      advice={attentionAdvice}
+      expanded={adviceExpanded}
+      onToggle={() => setAdviceExpanded((value) => !value)}
+      onOpenPrimary={attentionAdvice?.primaryTaskId && threads.some((item) => item.id === attentionAdvice.primaryTaskId) ? () => {
+        const item = threads.find((thread) => thread.id === attentionAdvice.primaryTaskId);
+        if (item) openThread(item);
+      } : null}
+    />}
     <section className={`filterbar${completedPage ? " with-date-filter" : ""}`}><span className="source-pill"><i/>实时读取本机 Codex</span><select value={project} onChange={(event) => setProject(event.target.value)}><option value="all">全部项目</option>{projects.map((item) => <option key={item}>{item}</option>)}</select>{completedPage && <div className="date-segment">{[["today","今天"],["week","本周"],["month","本月"],["all","全部"]].map(([value,label]) => <button className={doneRange === value ? "active" : ""} onClick={() => setDoneRange(value)} key={value}>{label}</button>)}</div>}<span className="task-total">共 {listPage ? listItems.length : filtered.filter((item) => item.lane !== "completed").length} 个任务</span></section>
     {error && <div className="error-banner">{error}<button onClick={() => void load()}>重试</button></div>}
     {!listPage ? <section className="board">

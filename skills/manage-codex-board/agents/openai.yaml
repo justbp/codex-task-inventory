@@ -1,4 +1,4 @@
 interface:
   display_name: "管理 Codex 看板"
-  short_description: "查看看板、给出建议并按明确指令启动 Codex 子任务"
+  short_description: "查看看板状态，并按明确指令记录或启动 Codex 子任务"
   default_prompt: "Use $manage-codex-board to review my current Codex board and tell me what needs attention."

@@ -19,6 +19,19 @@ export type CodexQuota = {
   fetchedAt: string;
 };
 
+export type AttentionAdvice = {
+  attentionToken: string;
+  headline: string;
+  focus: string;
+  background: string;
+  after: string;
+  parked: string;
+  nextCheck: string;
+  risk: string;
+  primaryTaskId: string | null;
+  generatedAt: string;
+};
+
 export type CodexThread = {
   kind: "manual" | "codex";
   id: string;

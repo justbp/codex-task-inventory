@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
+
 const DEFAULT_BASE_URL = "http://127.0.0.1:47824";
 const DEFAULT_LIMIT = 12;
 
@@ -11,6 +13,29 @@ function newestFirst(left, right) {
   return String(right.lastProgressAt || right.updatedAt || "").localeCompare(String(left.lastProgressAt || left.updatedAt || ""));
 }
 
+function progressAgeBand(task, now) {
+  if (task.runtimeStatus !== "active") return null;
+  const lastProgressAt = Date.parse(task.lastProgressAt || task.activeStartedAt || task.updatedAt || "");
+  if (!Number.isFinite(lastProgressAt)) return "unknown";
+  return now.getTime() - lastProgressAt >= 60 * 60 * 1000 ? "over_60m" : "under_60m";
+}
+
+function buildAttentionToken(items, now) {
+  const state = items
+    .filter((item) => item.lane !== "completed")
+    .map((item) => ({
+      id: item.id,
+      lane: item.lane,
+      runtimeStatus: item.runtimeStatus,
+      priority: item.priority || "medium",
+      resultAt: item.lastCompletedAt || item.lastInterruptedAt || null,
+      needsUserAt: ["waiting", "interrupted"].includes(item.runtimeStatus) ? item.lastProgressAt || item.updatedAt || null : null,
+      activeAgeBand: progressAgeBand(item, now),
+    }))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+  return createHash("sha256").update(JSON.stringify(state)).digest("hex").slice(0, 16);
+}
+
 function taskView(task) {
   return {
     id: task.id,
@@ -20,17 +45,24 @@ function taskView(task) {
     runtimeStatus: task.runtimeStatus,
     project: compact(task.project, 100),
     cwd: compact(task.cwd, 500),
+    priority: task.priority || "medium",
     updatedAt: task.updatedAt || null,
+    activeStartedAt: task.activeStartedAt || null,
     lastProgressAt: task.lastProgressAt || null,
+    lastCompletedAt: task.lastCompletedAt || null,
+    lastInterruptedAt: task.lastInterruptedAt || null,
     progress: compact(task.lastProgress || task.preview, 180),
+    lastError: compact(task.lastError, 180),
+    deepLink: compact(task.deepLink, 500) || null,
   };
 }
 
-export function buildSnapshot(threads, limit = DEFAULT_LIMIT) {
+export function buildSnapshot(threads, limit = DEFAULT_LIMIT, now = new Date()) {
   const items = Array.isArray(threads) ? threads : [];
   const take = (predicate) => items.filter(predicate).sort(newestFirst).slice(0, limit).map(taskView);
   return {
-    generatedAt: new Date().toISOString(),
+    generatedAt: now.toISOString(),
+    attentionToken: buildAttentionToken(items, now),
     counts: {
       total: items.length,
       waiting: items.filter((item) => item.runtimeStatus === "waiting").length,
@@ -92,6 +124,21 @@ function taskInput(options, lane) {
   };
 }
 
+function adviceInput(options) {
+  return {
+    attentionToken: required(options, "attention-token"),
+    headline: required(options, "headline"),
+    focus: required(options, "focus"),
+    background: compact(options.background, 400),
+    after: compact(options.after, 400),
+    parked: compact(options.parked, 400),
+    nextCheck: compact(options["next-check"], 200),
+    risk: compact(options.risk, 300),
+    primaryTaskId: compact(options["primary-task-id"], 100) || null,
+    generatedAt: compact(options["generated-at"], 50) || new Date().toISOString(),
+  };
+}
+
 export async function run(argv, { fetchImpl = fetch, baseUrl = process.env.CODEX_TASK_MONITOR_URL || DEFAULT_BASE_URL } = {}) {
   const { command, options } = parseArgs(argv);
   if (command === "snapshot") {
@@ -116,12 +163,16 @@ export async function run(argv, { fetchImpl = fetch, baseUrl = process.env.CODEX
     const launched = await request(baseUrl, `/api/items/${encodeURIComponent(id)}/start`, { method: "POST", body: "{}" }, fetchImpl);
     return { item: created.item, launched };
   }
+  if (command === "publish-advice") {
+    return request(baseUrl, "/api/attention-advice", { method: "PUT", body: JSON.stringify(adviceInput(options)) }, fetchImpl);
+  }
   return {
     usage: [
       "boardctl.mjs snapshot [--limit 12]",
       "boardctl.mjs create --title TITLE [--note NOTE] [--project PROJECT] [--cwd PATH] [--lane inbox|upcoming]",
       "boardctl.mjs start --id ID",
       "boardctl.mjs dispatch --title TITLE --cwd PATH [--note NOTE] [--project PROJECT]",
+      "boardctl.mjs publish-advice --attention-token TOKEN --headline TEXT --focus TEXT [--background TEXT] [--after TEXT] [--parked TEXT] [--next-check TEXT] [--risk TEXT] [--primary-task-id ID]",
     ],
   };
 }

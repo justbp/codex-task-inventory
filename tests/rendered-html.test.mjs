@@ -21,6 +21,9 @@ test("ships the four-stage board with separate completed and favorites pages", a
   assert.match(workspace, /新建 Codex 管理/);
   assert.match(workspace, /打开管理对话/);
   assert.match(workspace, /\/api\/manager\/start/);
+  assert.match(workspace, /下一小时建议/);
+  assert.match(workspace, /\/api\/attention-advice/);
+  assert.match(workspace, /打开第一项/);
   assert.match(workspace, /completedAt/);
   assert.match(workspace, /thread\.deepLink/);
   assert.match(workspace, /交给 Codex/);
@@ -49,6 +52,7 @@ test("ships the four-stage board with separate completed and favorites pages", a
   assert.match(workspace, /\/api\/items\/\$\{id\}\/start/);
   assert.doesNotMatch(workspace, /新增任务|createTask/);
   assert.match(styles, /\.board-column,.card-list,.task-card\s*\{\s*min-width:0/);
+  assert.match(styles, /\.attention-advice\s*\{/);
   assert.match(styles, /\.task-card h3,.task-description[^}]+overflow-wrap:anywhere/);
   assert.match(styles, /\.card-list[^}]+overflow-y:auto/);
   assert.match(styles, /\.card-list>\.task-card[^}]+flex:0 0 auto/);

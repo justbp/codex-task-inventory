@@ -100,6 +100,20 @@ export function initMetadata(db) {
       thread_id TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS attention_advice (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      attention_token TEXT NOT NULL,
+      headline TEXT NOT NULL,
+      focus TEXT NOT NULL,
+      background TEXT NOT NULL DEFAULT '',
+      after_text TEXT NOT NULL DEFAULT '',
+      parked TEXT NOT NULL DEFAULT '',
+      next_check TEXT NOT NULL DEFAULT '',
+      risk TEXT NOT NULL DEFAULT '',
+      primary_task_id TEXT,
+      generated_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
   const manualColumns = new Set(db.prepare("PRAGMA table_info(manual_tasks)").all().map((column) => column.name));
   if (!manualColumns.has("cwd")) db.exec("ALTER TABLE manual_tasks ADD COLUMN cwd TEXT");
@@ -195,6 +209,51 @@ function managerRepository(db) {
     bind(projectPath, threadId) {
       bind.run(projectPath, threadId, new Date().toISOString());
       return this.get(projectPath);
+    },
+  };
+}
+
+function attentionAdviceRepository(db) {
+  const find = db.prepare("SELECT * FROM attention_advice WHERE id = 1");
+  const save = db.prepare(`INSERT INTO attention_advice
+    (id,attention_token,headline,focus,background,after_text,parked,next_check,risk,primary_task_id,generated_at,updated_at)
+    VALUES (1,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET attention_token=excluded.attention_token,headline=excluded.headline,focus=excluded.focus,
+      background=excluded.background,after_text=excluded.after_text,parked=excluded.parked,next_check=excluded.next_check,
+      risk=excluded.risk,primary_task_id=excluded.primary_task_id,generated_at=excluded.generated_at,updated_at=excluded.updated_at`);
+  const text = (value, limit) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, limit);
+  const map = (row) => row ? {
+    attentionToken: row.attention_token,
+    headline: row.headline,
+    focus: row.focus,
+    background: row.background,
+    after: row.after_text,
+    parked: row.parked,
+    nextCheck: row.next_check,
+    risk: row.risk,
+    primaryTaskId: row.primary_task_id,
+    generatedAt: row.generated_at,
+  } : null;
+  return {
+    get() { return map(find.get()); },
+    put(input) {
+      if (!input || typeof input !== "object" || Array.isArray(input)) throw new ApiError(400, "建议内容必须是对象");
+      const advice = {
+        attentionToken: text(input.attentionToken, 100),
+        headline: text(input.headline, 160),
+        focus: text(input.focus, 600),
+        background: text(input.background, 400),
+        after: text(input.after, 400),
+        parked: text(input.parked, 400),
+        nextCheck: text(input.nextCheck, 200),
+        risk: text(input.risk, 300),
+        primaryTaskId: text(input.primaryTaskId, 100) || null,
+        generatedAt: text(input.generatedAt, 50) || new Date().toISOString(),
+      };
+      if (!advice.attentionToken || !advice.headline || !advice.focus) throw new ApiError(400, "建议缺少 attentionToken、headline 或 focus");
+      if (!Number.isFinite(Date.parse(advice.generatedAt))) throw new ApiError(400, "generatedAt 必须是有效时间");
+      save.run(advice.attentionToken, advice.headline, advice.focus, advice.background, advice.after, advice.parked, advice.nextCheck, advice.risk, advice.primaryTaskId, advice.generatedAt, new Date().toISOString());
+      return this.get();
     },
   };
 }
@@ -311,6 +370,7 @@ export function createTaskServer(options = {}) {
   const metadata = metadataRepository(db);
   const manual = manualRepository(db);
   const managers = managerRepository(db);
+  const attentionAdvice = attentionAdviceRepository(db);
   const monitor = options.monitor || new CodexMonitor(options.monitorOptions);
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
   const deepLinkOpener = options.deepLinkOpener || { open: openCodexDeepLink };
@@ -378,6 +438,13 @@ export function createTaskServer(options = {}) {
         const codexThreads = createSnapshot(monitor, metadata, new Map(), { includeHidden: url.searchParams.get("hidden") === "1" });
         await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
         return json(res, 200, { threads: [...manual.list(), ...applyThreadNames(codexThreads, threadNames)] });
+      }
+      if (url.pathname === "/api/attention-advice" && req.method === "GET") return json(res, 200, { advice: attentionAdvice.get() });
+      if (url.pathname === "/api/attention-advice" && req.method === "PUT") {
+        const advice = attentionAdvice.put(await parseBody(req));
+        const payload = `event: attention-advice-changed\ndata: ${JSON.stringify({ at: advice.generatedAt })}\n\n`;
+        for (const subscriber of subscribers) subscriber.write(payload);
+        return json(res, 200, { advice });
       }
       if (url.pathname === "/api/manager" && req.method === "GET") {
         const current = managers.get(PROJECT_ROOT);

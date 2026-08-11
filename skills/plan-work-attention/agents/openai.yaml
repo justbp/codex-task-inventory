@@ -1,0 +1,4 @@
+interface:
+  display_name: "规划工作注意力"
+  short_description: "结合 Codex 看板与个人时间约束，规划下一工作时段的注意力安排"
+  default_prompt: "Use $plan-work-attention to decide my next focus block, what Codex can run in the background, and what I should ignore for now."
