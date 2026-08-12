@@ -32,6 +32,44 @@ export type AttentionAdvice = {
   generatedAt: string;
 };
 
+export type RoundtableStatus = "idle" | "running" | "completed" | "cancelled" | "failed";
+export type RoundtableAuthor = "user" | "moderator" | "codex" | "cursor" | "minimax" | string;
+
+export type RoundtableTopic = {
+  id: string;
+  title: string;
+  prompt: string;
+  cwd: string;
+  status: RoundtableStatus;
+  phase?: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount?: number;
+  error?: string;
+};
+
+export type RoundtableMessage = {
+  id: string;
+  topicId: string;
+  author: RoundtableAuthor;
+  content: string;
+  role?: "user" | "agent" | "moderator" | string;
+  kind?: "question" | "status" | "analysis" | "critique" | "summary" | "error" | string;
+  metadata?: { agent?: string; phase?: string; model?: string; target?: string | null; [key: string]: unknown };
+  createdAt: string;
+  error?: string;
+};
+
+export type RoundtableEvidence = {
+  id: string;
+  topicId: string;
+  messageId?: string;
+  type: "web" | "code" | string;
+  value: string;
+  label?: string;
+  createdAt?: string;
+};
+
 export type CodexThread = {
   kind: "manual" | "codex";
   id: string;
@@ -46,6 +84,7 @@ export type CodexThread = {
   pinned: boolean;
   deepLink: string | null;
   codexThreadId?: string | null;
+  launchRequestedAt?: string | null;
   runtimeStatus: RuntimeStatus;
   activeTurnId: string | null;
   activeStartedAt: string | null;

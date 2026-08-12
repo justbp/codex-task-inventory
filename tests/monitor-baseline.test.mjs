@@ -88,7 +88,7 @@ test("upgrades the legacy monitor schema without losing existing task data", () 
     const metadataColumns = new Set(db.prepare("PRAGMA table_info(thread_metadata)").all().map((column) => column.name));
     const manualColumns = new Set(db.prepare("PRAGMA table_info(manual_tasks)").all().map((column) => column.name));
     for (const column of ["pinned", "last_seen_interruption", "review_tracking_started_at"]) assert.equal(metadataColumns.has(column), true);
-    for (const column of ["cwd", "pinned"]) assert.equal(manualColumns.has(column), true);
+    for (const column of ["cwd", "pinned", "launch_requested_at"]) assert.equal(manualColumns.has(column), true);
 
     const legacyThread = db.prepare("SELECT * FROM thread_metadata WHERE thread_id='thread-legacy'").get();
     const legacyTask = db.prepare("SELECT * FROM manual_tasks WHERE id='manual-legacy'").get();
@@ -99,6 +99,7 @@ test("upgrades the legacy monitor schema without losing existing task data", () 
     assert.equal(legacyTask.note, "keep manual note");
     assert.equal(legacyTask.cwd, null);
     assert.equal(legacyTask.pinned, 0);
+    assert.equal(legacyTask.launch_requested_at, null);
   } finally {
     db.close();
     rmSync(sandbox, { recursive: true, force: true });
