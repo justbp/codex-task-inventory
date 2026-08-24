@@ -38,6 +38,20 @@ test("keeps the baseline lane precedence for runtime, review, and manual acknowl
   const interruptedAt = "2026-08-03T00:00:00.000Z";
   assert.equal(effectiveLane(thread({ runtimeStatus: "interrupted", lastInterruptedAt: interruptedAt }), metadata()), "review");
   assert.equal(effectiveLane(thread({ runtimeStatus: "interrupted", lastInterruptedAt: interruptedAt }), metadata({ lane: "completed", lastSeenInterruption: interruptedAt })), "completed");
+
+  assert.equal(effectiveLane(thread({
+    runtimeStatus: "interrupted",
+    lastInterruptedAt: interruptedAt,
+    latestTerminalType: "interruption",
+    latestTerminalAt: interruptedAt,
+    latestTerminalReviewEligible: false,
+  }), metadata()), "inbox", "empty delegated interruption stays out of review");
+  assert.equal(effectiveLane(thread({
+    lastCompletedAt: completedAt,
+    latestTerminalType: "completion",
+    latestTerminalAt: completedAt,
+    latestTerminalReviewEligible: true,
+  }), metadata()), "review", "substantive latest completion enters review");
 });
 
 test("upgrades the legacy monitor schema without losing existing task data", () => {

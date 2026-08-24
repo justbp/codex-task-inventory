@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { CodexMonitor } from "./codex-monitor.mjs";
+import { CodexMonitor, normalizeCodexTitle } from "./codex-monitor.mjs";
 import { buildTaskPrompt, CodexLauncher } from "./codex-launcher.mjs";
 import { CodexQuotaReader } from "./codex-quota.mjs";
 import { createRoundtableAgentRunner } from "./roundtable-agents.mjs";
@@ -326,6 +326,14 @@ export function effectiveLane(thread, meta) {
   if (thread.runtimeStatus === "active") return "in_progress";
   if (thread.runtimeStatus === "waiting") return "in_progress";
   if (thread.archived) return "completed";
+  if (thread.latestTerminalType && thread.latestTerminalAt) {
+    const baseline = thread.latestTerminalType === "completion"
+      ? (meta.lastSeenCompletion || meta.reviewTrackingStartedAt)
+      : (meta.lastSeenInterruption || meta.reviewTrackingStartedAt);
+    if (thread.latestTerminalReviewEligible !== false && (!baseline || thread.latestTerminalAt > baseline)) return "review";
+    if (meta.lane === "completed") return "completed";
+    return meta.lane;
+  }
   const reviewBaseline = meta.lastSeenCompletion || meta.reviewTrackingStartedAt;
   if (thread.lastCompletedAt && (!reviewBaseline || thread.lastCompletedAt > reviewBaseline)) return "review";
   const interruptionBaseline = meta.lastSeenInterruption || meta.reviewTrackingStartedAt;
@@ -338,14 +346,15 @@ function createSnapshot(monitor, metadata, threadNames = new Map(), { includeHid
   return monitor.list().map((thread) => {
     const meta = metadata.ensure(thread);
     const syncedName = threadNames.get(thread.id);
-    return { ...thread, ...(syncedName ? { title: syncedName } : {}), kind: "codex", ...meta, project: meta.projectOverride || thread.project, lane: effectiveLane(thread, meta) };
+    const title = normalizeCodexTitle(syncedName || thread.title, thread.preview);
+    return { ...thread, title, kind: "codex", ...meta, project: meta.projectOverride || thread.project, lane: effectiveLane(thread, meta) };
   }).filter((thread) => (includeHidden || !thread.hidden) && ["in_progress", "review", "completed"].includes(thread.lane));
 }
 
 function applyThreadNames(threads, threadNames) {
   return threads.map((thread) => {
     const syncedName = threadNames.get(thread.id);
-    return syncedName ? { ...thread, title: syncedName } : thread;
+    return syncedName ? { ...thread, title: normalizeCodexTitle(syncedName, thread.preview) } : thread;
   });
 }
 
