@@ -87,7 +87,7 @@ function adviceTime(value: string) {
 
 function AttentionAdviceCard({ advice, expanded, onToggle, onOpenPrimary }: { advice: AttentionAdvice | null; expanded: boolean; onToggle: () => void; onOpenPrimary: (() => void) | null }) {
   if (!advice) return <section className="attention-advice attention-empty" aria-label="注意力建议">
-    <div className="attention-kicker"><Icon name="pulse" size={15}/><span>下一小时建议</span></div>
+    <div className="attention-kicker"><Icon name="pulse" size={15}/><span>接下来 30 分钟</span></div>
     <div className="attention-main"><strong>等待第一次注意力评估</strong><p>定时 Skill 生成建议后会显示在这里；看板不会自动启动或验收任务。</p></div>
   </section>;
   const details = [
@@ -98,7 +98,7 @@ function AttentionAdviceCard({ advice, expanded, onToggle, onOpenPrimary }: { ad
     ["下次检查", advice.nextCheck],
   ].filter((item) => item[1]);
   return <section className={`attention-advice${expanded ? " is-expanded" : ""}`} aria-label="注意力建议">
-    <div className="attention-kicker"><Icon name="pulse" size={15}/><span>下一小时建议</span><time>{adviceTime(advice.generatedAt)}</time></div>
+    <div className="attention-kicker"><Icon name="pulse" size={15}/><span>接下来 30 分钟</span><time>{adviceTime(advice.generatedAt)}</time></div>
     <div className="attention-main"><strong>{advice.headline}</strong><p>{advice.focus}</p></div>
     <div className="attention-meta">{advice.background && <span><b>Codex 后台</b>{advice.background}</span>}{advice.nextCheck && <span><b>下次评估</b>{advice.nextCheck}</span>}</div>
     <div className="attention-actions">{onOpenPrimary && <button onClick={onOpenPrimary}>打开第一项</button>}<button onClick={onToggle}>{expanded ? "收起" : "展开"}</button></div>
@@ -220,8 +220,9 @@ export default function TaskWorkspace() {
   }
 
   async function startManual(id: string) {
-    const result = await api<{ deepLink: string }>(`/api/items/${id}/start`, { method: "POST", body: "{}" });
-    return result.deepLink;
+    const result = await api<{ opened: boolean; pendingBinding: boolean }>(`/api/items/${id}/start`, { method: "POST", body: "{}" });
+    if (!result.opened) throw new Error("未能打开 Codex App");
+    await load(true);
   }
 
   async function removeManual(thread: CodexThread) {
@@ -265,7 +266,7 @@ export default function TaskWorkspace() {
       <div className="top-actions"><button className="icon-button" onClick={() => void Promise.all([load(), loadQuota(true), loadAttentionAdvice()])} title="刷新任务、额度和建议"><Icon name="refresh"/></button></div>
     </header>
     <section className="page-heading">
-      <nav className="page-tabs" aria-label="任务页面"><a className={!listPage ? "active" : ""} href="/">任务看板</a><a className={completedPage ? "active" : ""} href="/completed">已完成 <b>{threads.filter((item) => item.lane === "completed").length}</b></a><a className={favoritesPage ? "active" : ""} href="/favorites">收藏 <b>{threads.filter((item) => item.lane === "completed" && item.pinned).length}</b></a></nav>
+      <nav className="page-tabs" aria-label="任务页面"><a className={!listPage ? "active" : ""} href="/">任务看板</a><a className={completedPage ? "active" : ""} href="/completed">已完成 <b>{threads.filter((item) => item.lane === "completed").length}</b></a><a className={favoritesPage ? "active" : ""} href="/favorites">收藏 <b>{threads.filter((item) => item.lane === "completed" && item.pinned).length}</b></a><a href="/roundtable">圆桌讨论</a></nav>
       <div className="manager-controls"><button className="manager-action manager-create" disabled={managerLaunching} onClick={() => void startManager()}><Icon name="plus"/><span>{managerLaunching ? "正在新建…" : "新建 Codex 管理"}</span></button><button className="manager-action" disabled={!managerAvailable || managerOpening} onClick={() => void openManager()}><Icon name="manage"/><span>{managerOpening ? "正在打开…" : managerOpened ? "已打开 Codex" : "打开管理对话"}</span></button></div>
       <div className="summary-strip"><div><span>任务</span><strong>{threads.length}</strong></div><i/><div><span>执行中</span><strong>{activeCount}</strong></div><i/><div><span>等待我</span><strong>{waitingCount}</strong></div><i/><div><span>待检查</span><strong>{threads.filter((item) => item.lane === "review").length}</strong></div></div>
     </section>
@@ -337,7 +338,7 @@ function DirectoryInput({ id, value, project, choices, onChange, hint }: { id: s
   return <label className="field"><span>工作目录 <em>{hint}</em></span><input list={`${id}-paths`} value={value} onChange={(event) => onChange(event.target.value)} placeholder="选择已有目录或输入绝对路径"/><datalist id={`${id}-paths`}>{paths.map((path) => <option value={path} key={path}/>)}</datalist></label>;
 }
 
-function ThreadDrawer({ thread, projectChoices, onClose, onPatch, onStart, onDelete }: { thread: CodexThread; projectChoices: ProjectChoice[]; onClose: () => void; onPatch: (change: Record<string, unknown>) => Promise<void>; onStart: () => Promise<string>; onDelete: () => Promise<void> }) {
+function ThreadDrawer({ thread, projectChoices, onClose, onPatch, onStart, onDelete }: { thread: CodexThread; projectChoices: ProjectChoice[]; onClose: () => void; onPatch: (change: Record<string, unknown>) => Promise<void>; onStart: () => Promise<void>; onDelete: () => Promise<void> }) {
   const [title, setTitle] = useState(thread.title);
   const [project, setProject] = useState(thread.project);
   const [cwd, setCwd] = useState(thread.cwd);
@@ -361,14 +362,14 @@ function ThreadDrawer({ thread, projectChoices, onClose, onPatch, onStart, onDel
     setLaunching(true); setActionError("");
     try {
       await onPatch(changes());
-      const deepLink = await onStart();
-      window.location.href = deepLink;
+      await onStart();
+      onClose();
     } catch (reason) { setActionError(reason instanceof Error ? reason.message : "无法启动 Codex"); }
     finally { setLaunching(false); }
   }
   return <><div className="drawer-scrim" onClick={onClose}/><aside className="task-drawer">
-    <header className="drawer-header"><span className={`runtime runtime-${thread.kind === "manual" ? "manual" : thread.runtimeStatus}`}><i/>{thread.kind === "manual" ? "我的待办" : thread.runtimeStatus === "active" ? "Codex 正在执行" : thread.runtimeStatus === "waiting" ? "等待你的操作" : "Codex 任务"}</span><button className="icon-button" onClick={onClose}><Icon name="close"/></button></header>
-    <div className="drawer-content"><p className="drawer-kicker">{thread.kind === "manual" ? "尚未发送给 Codex" : "真实 Codex 对话"}</p><h2>{thread.title}</h2><p className="drawer-preview">{thread.lastProgress || thread.preview || "尚未填写说明"}</p>
+    <header className="drawer-header"><span className={`runtime runtime-${thread.kind === "manual" ? "manual" : thread.runtimeStatus}`}><i/>{thread.kind === "manual" ? (thread.launchRequestedAt ? "等待在 Codex 发送" : "我的待办") : thread.runtimeStatus === "active" ? "Codex 正在执行" : thread.runtimeStatus === "waiting" ? "等待你的操作" : "Codex 任务"}</span><button className="icon-button" onClick={onClose}><Icon name="close"/></button></header>
+    <div className="drawer-content"><p className="drawer-kicker">{thread.kind === "manual" ? (thread.launchRequestedAt ? "已带到 Codex App，发送后看板自动同步" : "尚未发送给 Codex") : "真实 Codex 对话"}</p><h2>{thread.title}</h2><p className="drawer-preview">{thread.lastProgress || thread.preview || "尚未填写说明"}</p>
       {thread.kind === "manual" && <label className="field"><span>待办名称</span><input value={title} maxLength={300} onChange={(event) => setTitle(event.target.value)}/></label>}
       {thread.kind === "codex" && <dl className="thread-facts"><div><dt>工作目录</dt><dd>{thread.cwd}</dd></div><div><dt>最近更新</dt><dd>{relativeTime(thread.updatedAt)}</dd></div><div><dt>最近文件变更</dt><dd>{relativeTime(thread.lastFileChangeAt)}</dd></div></dl>}
       <ProjectInput id={`drawer-${thread.id}`} value={project} choices={projectChoices} onChange={setProject} onDirectorySuggested={thread.kind === "manual" ? setCwd : undefined}/>
@@ -378,7 +379,7 @@ function ThreadDrawer({ thread, projectChoices, onClose, onPatch, onStart, onDel
       <label className="field"><span>我的备注</span><textarea value={note} onChange={(event) => setNote(event.target.value)} rows={5}/></label>
       {actionError && <p className="form-error">{actionError}</p>}
     </div>
-    <footer className="drawer-footer"><div className="drawer-leading-actions">{thread.deepLink ? <a className="secondary-button" href={thread.deepLink}><Icon name="open"/>回到 Codex 对话</a> : thread.kind === "manual" && thread.lane === "upcoming" ? <button className="primary-button" disabled={launching || saving} onClick={() => void launch()}><Icon name="play"/>{launching ? "正在启动…" : "启动 Codex"}</button> : thread.kind === "manual" && thread.lane === "inbox" ? <span className="launch-hint">移入“待办”后可交给 Codex 启动</span> : <span/>}{thread.kind === "manual" && ["inbox", "upcoming"].includes(thread.lane) && <button className="secondary-button danger-button" disabled={saving || launching} onClick={() => void onDelete()}><Icon name="trash"/>删除</button>}</div><div>{thread.lane !== "completed" && <button className="secondary-button" disabled={launching} onClick={() => void onPatch({ lane: "completed" })}><Icon name="check"/>标记完成</button>}<button className="primary-button" disabled={saving || launching} onClick={() => void save()}>{saving ? "保存中…" : "保存排布"}</button></div></footer>
+    <footer className="drawer-footer"><div className="drawer-leading-actions">{thread.deepLink ? <a className="secondary-button" href={thread.deepLink}><Icon name="open"/>回到 Codex 对话</a> : thread.kind === "manual" && thread.lane === "upcoming" ? <button className="primary-button" disabled={launching || saving} onClick={() => void launch()}><Icon name="play"/>{launching ? "正在打开…" : thread.launchRequestedAt ? "重新打开 Codex" : "去 Codex 启动"}</button> : thread.kind === "manual" && thread.lane === "inbox" ? <span className="launch-hint">移入“待办”后可交给 Codex 启动</span> : <span/>}{thread.kind === "manual" && ["inbox", "upcoming"].includes(thread.lane) && <button className="secondary-button danger-button" disabled={saving || launching} onClick={() => void onDelete()}><Icon name="trash"/>删除</button>}</div><div>{thread.lane !== "completed" && <button className="secondary-button" disabled={launching} onClick={() => void onPatch({ lane: "completed" })}><Icon name="check"/>标记完成</button>}<button className="primary-button" disabled={saving || launching} onClick={() => void save()}>{saving ? "保存中…" : "保存排布"}</button></div></footer>
   </aside></>;
 }
 

@@ -11,6 +11,36 @@ function compact(value, max = MAX_TEXT) {
   return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+function messageText(payload) {
+  if (typeof payload?.message === "string") return payload.message;
+  if (!Array.isArray(payload?.content)) return "";
+  return payload.content.map((item) => item?.text || "").join("\n").trim();
+}
+
+function promptKind(value) {
+  const text = String(value ?? "").trim();
+  if (/^<codex_delegation(?:\s|>)/i.test(text)) return "delegation";
+  if (/^<heartbeat(?:\s|>)/i.test(text)) return "heartbeat";
+  return "user";
+}
+
+function isNoActionHeartbeat(value) {
+  const text = String(value ?? "").trim();
+  return /^<heartbeat(?:\s|>)/i.test(text)
+    && /<decision>\s*(?:DONT_NOTIFY|SILENT|NO_ACTION)\s*<\/decision>/i.test(text);
+}
+
+export function normalizeCodexTitle(title, preview = "") {
+  const current = compact(title, 160);
+  if (!/^<(?:codex_delegation|heartbeat)(?:\s|>)/i.test(current)) return current || "未命名 Codex 任务";
+  const source = String(preview || title || "");
+  const delegationInput = source.match(/<input>([\s\S]*?)<\/input>/i)?.[1];
+  if (delegationInput) return `委派：${compact(delegationInput, 116)}`;
+  const automationId = source.match(/<automation_id>([\s\S]*?)<\/automation_id>/i)?.[1];
+  if (automationId) return `定时任务：${compact(automationId, 120)}`;
+  return promptKind(source) === "delegation" ? "Codex 委派任务" : "Codex 定时任务";
+}
+
 function isoFromSeconds(value) {
   return new Date(Number(value) * 1000).toISOString();
 }
@@ -36,6 +66,15 @@ export class CodexMonitor {
     let lastFileChangeAt = null;
     let lastError = "";
     let lastAbortedAt = null;
+    let currentTurnKind = "user";
+    let currentTurnHadProgress = false;
+    let currentTurnHadFileChange = false;
+    let lastCompletionReviewEligible = true;
+    let lastInterruptionReviewEligible = true;
+    let latestTerminalType = null;
+    let latestTerminalAt = null;
+    let latestTerminalReviewEligible = true;
+    let latestTerminalOriginKind = "user";
     const pendingCalls = new Map();
 
     const bytes = Math.min(stat.size, MAX_ROLLOUT_BYTES);
@@ -54,26 +93,51 @@ export class CodexMonitor {
         activeTurnId = payload.turn_id || "unknown";
         activeStartedAt = at;
         lastError = "";
+        currentTurnKind = "user";
+        currentTurnHadProgress = false;
+        currentTurnHadFileChange = false;
         pendingCalls.clear();
       } else if (entry.type === "event_msg" && payload.type === "task_complete") {
         activeTurnId = null;
         activeStartedAt = null;
         lastCompletedAt = at;
-        if (payload.last_agent_message) lastProgress = compact(payload.last_agent_message);
+        const finalMessage = compact(payload.last_agent_message);
+        if (finalMessage) {
+          lastProgress = finalMessage;
+          currentTurnHadProgress = true;
+        }
+        lastCompletionReviewEligible = !isNoActionHeartbeat(payload.last_agent_message)
+          && (currentTurnHadProgress || currentTurnHadFileChange);
+        latestTerminalType = "completion";
+        latestTerminalAt = at;
+        latestTerminalReviewEligible = lastCompletionReviewEligible;
+        latestTerminalOriginKind = currentTurnKind;
         pendingCalls.clear();
       } else if (entry.type === "event_msg" && payload.type === "turn_aborted") {
         activeTurnId = null;
         activeStartedAt = null;
         lastAbortedAt = at;
         lastError = compact(payload.reason || "任务已中断");
+        lastInterruptionReviewEligible = currentTurnKind === "user"
+          || currentTurnHadProgress
+          || currentTurnHadFileChange;
+        latestTerminalType = "interruption";
+        latestTerminalAt = at;
+        latestTerminalReviewEligible = lastInterruptionReviewEligible;
+        latestTerminalOriginKind = currentTurnKind;
         pendingCalls.clear();
       } else if (entry.type === "event_msg" && payload.type === "error") {
         lastError = compact(payload.message || payload.error || "执行失败");
       } else if (entry.type === "event_msg" && payload.type === "agent_message") {
         lastProgress = compact(payload.message || payload.text);
         lastProgressAt = at;
+        if (lastProgress) currentTurnHadProgress = true;
+      } else if ((entry.type === "event_msg" && payload.type === "user_message") || (entry.type === "response_item" && payload.type === "message" && payload.role === "user")) {
+        const kind = promptKind(messageText(payload));
+        if (kind !== "user") currentTurnKind = kind;
       } else if (entry.type === "event_msg" && payload.type === "patch_apply_end") {
         lastFileChangeAt = at;
+        currentTurnHadFileChange = true;
       } else if (entry.type === "response_item" && ["function_call", "custom_tool_call"].includes(payload.type)) {
         const id = payload.call_id || payload.id;
         if (id) pendingCalls.set(id, payload.name || payload.tool_name || "tool");
@@ -89,7 +153,13 @@ export class CodexMonitor {
       ? "interrupted"
       : activeTurnId && !activeIsFresh ? "unknown"
       : activeTurnId ? (waitingOnUser ? "waiting" : "active") : "idle";
-    const value = { runtimeStatus, activeTurnId, activeStartedAt, lastCompletedAt, lastInterruptedAt: lastAbortedAt, lastProgress, lastProgressAt, lastFileChangeAt, lastError, rolloutUpdatedAt: new Date(stat.mtimeMs).toISOString() };
+    const value = {
+      runtimeStatus, activeTurnId, activeStartedAt, lastCompletedAt, lastInterruptedAt: lastAbortedAt,
+      lastCompletionReviewEligible, lastInterruptionReviewEligible,
+      latestTerminalType, latestTerminalAt, latestTerminalReviewEligible, latestTerminalOriginKind,
+      lastProgress, lastProgressAt, lastFileChangeAt, lastError,
+      rolloutUpdatedAt: new Date(stat.mtimeMs).toISOString(),
+    };
     this.rolloutCache.set(path, { size: stat.size, mtimeMs: stat.mtimeMs, value });
     return value;
   }
@@ -107,7 +177,7 @@ export class CodexMonitor {
       `).all(Math.max(1, Math.min(Number(limit) || 200, 500)));
       return rows.map((row) => ({
         id: row.id,
-        title: compact(row.name || row.title, 160) || "未命名 Codex 任务",
+        title: normalizeCodexTitle(row.name || row.title, row.preview),
         preview: compact(row.preview),
         cwd: row.cwd,
         project: basename(row.cwd || "") || "未归项目",

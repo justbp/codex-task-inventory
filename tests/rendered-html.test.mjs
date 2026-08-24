@@ -21,7 +21,7 @@ test("ships the four-stage board with separate completed and favorites pages", a
   assert.match(workspace, /新建 Codex 管理/);
   assert.match(workspace, /打开管理对话/);
   assert.match(workspace, /\/api\/manager\/start/);
-  assert.match(workspace, /下一小时建议/);
+  assert.match(workspace, /接下来 30 分钟/);
   assert.match(workspace, /\/api\/attention-advice/);
   assert.match(workspace, /打开第一项/);
   assert.match(workspace, /completedAt/);

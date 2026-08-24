@@ -179,7 +179,7 @@ test("creates a project-bound manager conversation and opens the same conversati
   assert.equal(all.threads.find((item) => item.id === launched.threadId).hidden, true);
 });
 
-test("starts a manual task in Codex and replaces the manual card with its real thread", async () => {
+test("opens a manual task in the Codex App and binds the thread after the user sends it", async () => {
   const createdResponse = await fetch(`${baseUrl}/api/items`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -199,12 +199,33 @@ test("starts a manual task in Codex and replaces the manual card with its real t
   const deepLink = new URL(started.deepLink);
   assert.equal(deepLink.protocol, "codex:");
   assert.equal(deepLink.hostname, "threads");
-  assert.equal(deepLink.pathname, `/${started.threadId}`);
-  assert.deepEqual(launches.at(-1), { cwd: sandbox, prompt: "修复登录问题\n\n补回归测试" });
+  assert.equal(deepLink.pathname, "/new");
+  assert.equal(deepLink.searchParams.get("path"), sandbox);
+  assert.equal(deepLink.searchParams.get("prompt"), "修复登录问题\n\n补回归测试");
+  assert.equal(started.opened, true);
+  assert.equal(started.pendingBinding, true);
+  assert.equal(openedLinks.at(-1), started.deepLink);
+
+  const pending = await (await fetch(`${baseUrl}/api/threads`)).json();
+  assert.equal(pending.threads.find((item) => item.id === created.id).launchRequestedAt != null, true);
+
+  const id = "019fc79b-3541-7853-a09a-000000000099";
+  monitoredThreads.push({
+    ...sample,
+    id,
+    title: "修复登录问题",
+    preview: "修复登录问题\n\n补回归测试",
+    cwd: sandbox,
+    project: "demo",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    deepLink: `codex://threads/${id}`,
+    activeTurnId: "turn-launched",
+  });
 
   const listed = await (await fetch(`${baseUrl}/api/threads`)).json();
   assert.equal(listed.threads.some((item) => item.id === created.id), false, "bound manual card must not remain as a duplicate");
-  const bound = listed.threads.find((item) => item.id === started.threadId);
+  const bound = listed.threads.find((item) => item.id === id);
   assert.equal(bound.kind, "codex");
   assert.equal(bound.title, "修复登录问题");
   assert.equal(bound.lane, "in_progress");

@@ -36,7 +36,7 @@ M0 不新增页面、不改变卡片交互、不引入 Work Item/Run，也不改
 
 - title、note、lane、project 和 cwd。
 - tags、priority、sort_order 和 pinned。
-- codex_thread_id、completed_at、created_at 和 updated_at。
+- codex_thread_id、launch_requested_at、completed_at、created_at 和 updated_at。
 
 当 `codex_thread_id` 非空时，原手工任务不再出现在列表中；真实 Codex 线程接管卡片展示。
 
@@ -46,6 +46,7 @@ M0 不新增页面、不改变卡片交互、不引入 Work Item/Run，也不改
 
 - `manual_tasks.cwd`
 - `manual_tasks.pinned`
+- `manual_tasks.launch_requested_at`
 - `thread_metadata.pinned`
 - `thread_metadata.review_tracking_started_at`
 - `thread_metadata.last_seen_interruption`
@@ -82,10 +83,10 @@ Codex 线程的显示 lane 按以下顺序计算，前面的规则优先：
 1. 用户在 `inbox` 或 `upcoming` 创建手工任务。
 2. 只有 `upcoming` 允许启动。
 3. 启动前 cwd 必须是存在的绝对目录。
-4. 看板把 title 与 note 组合成启动 prompt。
-5. Codex App Server 创建新 thread 和 turn。
-6. 看板把手工任务元数据迁移到该 thread 的 `thread_metadata`。
-7. 手工任务写入 `codex_thread_id`，不再作为独立卡片返回。
+4. 看板把 title 与 note 原样组合，通过 `codex://threads/new?prompt=…&path=…` 打开 Codex App 的新对话页。
+5. 用户在 Codex App 发送后，看板按工作目录、启动时间和原始输入识别唯一的新 thread。
+6. 看板把手工任务元数据迁移到该 thread 的 `thread_metadata`，并写入 `codex_thread_id`。
+7. 绑定后原手工卡片消失，真实 Codex 卡片按运行状态同步；匹配不唯一时不绑定，避免关联错误对话。
 8. 真实 Codex 线程根据运行态出现在 `in_progress`。
 
 ## 7. HTTP API 基线

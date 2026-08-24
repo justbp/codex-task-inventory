@@ -1,6 +1,6 @@
 ---
 name: plan-work-attention
-description: Plan the user's next focus block from the live Codex Task Monitor board and optional personal constraints. Use when the user asks what to focus on, wants Codex work arranged around their attention, requests an hourly work recommendation, or schedules recurring attention planning.
+description: Plan the user's next 30-minute focus block from the live Codex Task Monitor board and optional personal constraints. Use when the user asks what to focus on, wants Codex work arranged around their attention, requests a short work recommendation, or schedules recurring attention planning.
 ---
 
 # Plan Work Attention
@@ -46,7 +46,7 @@ Ignore the current attention-planning automation and routine board-management ru
 Keep the result readable in under one minute. Use this structure and omit empty sections:
 
 ```text
-接下来 60 分钟
+接下来 30 分钟
 
 你的主线
 <one concrete outcome and a bounded time block>
@@ -61,7 +61,7 @@ Codex 后台
 <the main distractions to park>
 
 下次检查
-<time or event trigger>
+<task boundary, material change, or 30-minute trigger>
 
 注意
 <at most one material risk>

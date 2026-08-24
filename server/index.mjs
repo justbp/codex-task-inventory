@@ -5,9 +5,11 @@ import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { CodexMonitor } from "./codex-monitor.mjs";
+import { CodexMonitor, normalizeCodexTitle } from "./codex-monitor.mjs";
 import { buildTaskPrompt, CodexLauncher } from "./codex-launcher.mjs";
 import { CodexQuotaReader } from "./codex-quota.mjs";
+import { createRoundtableAgentRunner } from "./roundtable-agents.mjs";
+import { createRoundtableService } from "./roundtable.mjs";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SERVER_DIR, "..");
@@ -91,6 +93,7 @@ export function initMetadata(db) {
       sort_order INTEGER NOT NULL DEFAULT 0,
       pinned INTEGER NOT NULL DEFAULT 0,
       codex_thread_id TEXT,
+      launch_requested_at TEXT,
       completed_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -118,6 +121,7 @@ export function initMetadata(db) {
   const manualColumns = new Set(db.prepare("PRAGMA table_info(manual_tasks)").all().map((column) => column.name));
   if (!manualColumns.has("cwd")) db.exec("ALTER TABLE manual_tasks ADD COLUMN cwd TEXT");
   if (!manualColumns.has("pinned")) db.exec("ALTER TABLE manual_tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  if (!manualColumns.has("launch_requested_at")) db.exec("ALTER TABLE manual_tasks ADD COLUMN launch_requested_at TEXT");
   const metadataColumns = new Set(db.prepare("PRAGMA table_info(thread_metadata)").all().map((column) => column.name));
   if (!metadataColumns.has("pinned")) db.exec("ALTER TABLE thread_metadata ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
   if (!metadataColumns.has("review_tracking_started_at")) {
@@ -260,8 +264,8 @@ function attentionAdviceRepository(db) {
 
 function manualRepository(db) {
   const find = db.prepare("SELECT * FROM manual_tasks WHERE id = ?");
-  const insert = db.prepare(`INSERT INTO manual_tasks (id,title,note,lane,project,cwd,tags,priority,sort_order,pinned,codex_thread_id,completed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  const update = db.prepare(`UPDATE manual_tasks SET title=?,note=?,lane=?,project=?,cwd=?,tags=?,priority=?,sort_order=?,pinned=?,codex_thread_id=?,completed_at=?,updated_at=? WHERE id=?`);
+  const insert = db.prepare(`INSERT INTO manual_tasks (id,title,note,lane,project,cwd,tags,priority,sort_order,pinned,codex_thread_id,launch_requested_at,completed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const update = db.prepare(`UPDATE manual_tasks SET title=?,note=?,lane=?,project=?,cwd=?,tags=?,priority=?,sort_order=?,pinned=?,codex_thread_id=?,launch_requested_at=?,completed_at=?,updated_at=? WHERE id=?`);
   const remove = db.prepare("DELETE FROM manual_tasks WHERE id = ?");
   const rows = db.prepare("SELECT * FROM manual_tasks WHERE codex_thread_id IS NULL ORDER BY lane, sort_order, updated_at DESC");
   const map = (row) => {
@@ -271,6 +275,7 @@ function manualRepository(db) {
       id: row.id, kind: "manual", title: row.title, preview: row.note, note: row.note, lane: row.lane,
       project: row.project || "未归项目", tags, priority: row.priority, sortOrder: row.sort_order,
       codexThreadId: row.codex_thread_id, deepLink: row.codex_thread_id ? `codex://threads/${row.codex_thread_id}` : null,
+      launchRequestedAt: row.launch_requested_at,
       runtimeStatus: "idle", cwd: row.cwd || "", source: "manual", archived: false, pinned: Boolean(row.pinned),
       createdAt: row.created_at, updatedAt: row.updated_at, completedAt: row.completed_at,
       activeTurnId: null, activeStartedAt: null, lastCompletedAt: null, lastProgress: "", lastProgressAt: null, lastFileChangeAt: null, lastError: "",
@@ -295,18 +300,20 @@ function manualRepository(db) {
     if (input.sortOrder !== undefined && Number.isSafeInteger(input.sortOrder)) next.sortOrder = input.sortOrder;
     if (input.pinned !== undefined) next.pinned = Boolean(input.pinned);
     if (input.codexThreadId !== undefined) next.codexThreadId = input.codexThreadId ? String(input.codexThreadId).trim() : null;
-    next.note ??= ""; next.lane ??= "inbox"; next.project ??= null; next.cwd ??= null; next.tags ??= []; next.priority ??= "medium"; next.sortOrder ??= 0; next.pinned ??= false; next.codexThreadId ??= null;
+    if (input.launchRequestedAt !== undefined) next.launchRequestedAt = input.launchRequestedAt ? String(input.launchRequestedAt) : null;
+    next.note ??= ""; next.lane ??= "inbox"; next.project ??= null; next.cwd ??= null; next.tags ??= []; next.priority ??= "medium"; next.sortOrder ??= 0; next.pinned ??= false; next.codexThreadId ??= null; next.launchRequestedAt ??= null;
     return next;
   };
   const save = (id, next, createdAt) => {
     const now = new Date().toISOString();
     const completedAt = next.lane === "completed" ? (next.completedAt || now) : null;
-    if (createdAt) insert.run(id,next.title,next.note,next.lane,next.project,next.cwd,JSON.stringify(next.tags),next.priority,next.sortOrder,next.pinned ? 1 : 0,next.codexThreadId,completedAt,createdAt,now);
-    else update.run(next.title,next.note,next.lane,next.project,next.cwd,JSON.stringify(next.tags),next.priority,next.sortOrder,next.pinned ? 1 : 0,next.codexThreadId,completedAt,now,id);
+    if (createdAt) insert.run(id,next.title,next.note,next.lane,next.project,next.cwd,JSON.stringify(next.tags),next.priority,next.sortOrder,next.pinned ? 1 : 0,next.codexThreadId,next.launchRequestedAt,completedAt,createdAt,now);
+    else update.run(next.title,next.note,next.lane,next.project,next.cwd,JSON.stringify(next.tags),next.priority,next.sortOrder,next.pinned ? 1 : 0,next.codexThreadId,next.launchRequestedAt,completedAt,now,id);
     return map(find.get(id));
   };
   return {
     list() { return rows.all().map(map); },
+    pendingLaunches() { return rows.all().map(map).filter((task) => task.launchRequestedAt); },
     get(id) { const row = find.get(id); return row ? map(row) : null; },
     create(input) { const id = randomUUID(); const now = new Date().toISOString(); return save(id, normalize(input), now); },
     patch(id, input) { const row = find.get(id); if (!row) throw new ApiError(404, "待办不存在"); return save(id, normalize(input, map(row))); },
@@ -319,6 +326,14 @@ export function effectiveLane(thread, meta) {
   if (thread.runtimeStatus === "active") return "in_progress";
   if (thread.runtimeStatus === "waiting") return "in_progress";
   if (thread.archived) return "completed";
+  if (thread.latestTerminalType && thread.latestTerminalAt) {
+    const baseline = thread.latestTerminalType === "completion"
+      ? (meta.lastSeenCompletion || meta.reviewTrackingStartedAt)
+      : (meta.lastSeenInterruption || meta.reviewTrackingStartedAt);
+    if (thread.latestTerminalReviewEligible !== false && (!baseline || thread.latestTerminalAt > baseline)) return "review";
+    if (meta.lane === "completed") return "completed";
+    return meta.lane;
+  }
   const reviewBaseline = meta.lastSeenCompletion || meta.reviewTrackingStartedAt;
   if (thread.lastCompletedAt && (!reviewBaseline || thread.lastCompletedAt > reviewBaseline)) return "review";
   const interruptionBaseline = meta.lastSeenInterruption || meta.reviewTrackingStartedAt;
@@ -331,15 +346,39 @@ function createSnapshot(monitor, metadata, threadNames = new Map(), { includeHid
   return monitor.list().map((thread) => {
     const meta = metadata.ensure(thread);
     const syncedName = threadNames.get(thread.id);
-    return { ...thread, ...(syncedName ? { title: syncedName } : {}), kind: "codex", ...meta, project: meta.projectOverride || thread.project, lane: effectiveLane(thread, meta) };
+    const title = normalizeCodexTitle(syncedName || thread.title, thread.preview);
+    return { ...thread, title, kind: "codex", ...meta, project: meta.projectOverride || thread.project, lane: effectiveLane(thread, meta) };
   }).filter((thread) => (includeHidden || !thread.hidden) && ["in_progress", "review", "completed"].includes(thread.lane));
 }
 
 function applyThreadNames(threads, threadNames) {
   return threads.map((thread) => {
     const syncedName = threadNames.get(thread.id);
-    return syncedName ? { ...thread, title: syncedName } : thread;
+    return syncedName ? { ...thread, title: normalizeCodexTitle(syncedName, thread.preview) } : thread;
   });
+}
+
+function buildNewThreadDeepLink(task) {
+  const params = new URLSearchParams({ prompt: buildTaskPrompt(task), path: task.cwd });
+  return `codex://threads/new?${params.toString()}`;
+}
+
+function reconcilePendingLaunches(codexThreads, manual, metadata) {
+  const boundThreadIds = new Set(codexThreads.filter((thread) => metadata.get(thread.id)).map((thread) => thread.id));
+  for (const task of manual.pendingLaunches()) {
+    const requestedAt = Date.parse(task.launchRequestedAt);
+    const expectedPrompt = buildTaskPrompt(task);
+    const candidates = codexThreads.filter((thread) => {
+      if (boundThreadIds.has(thread.id) || resolve(thread.cwd || "") !== resolve(task.cwd)) return false;
+      if (!Number.isFinite(requestedAt) || Date.parse(thread.createdAt) < requestedAt - 2000) return false;
+      return thread.preview === expectedPrompt || thread.title === task.title;
+    });
+    if (candidates.length !== 1) continue;
+    const [thread] = candidates;
+    metadata.createFromManual(thread.id, task);
+    manual.patch(task.id, { codexThreadId: thread.id, launchRequestedAt: null });
+    boundThreadIds.add(thread.id);
+  }
 }
 
 const MIME_TYPES = { ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml", ".woff": "font/woff", ".woff2": "font/woff2" };
@@ -375,6 +414,10 @@ export function createTaskServer(options = {}) {
   const launcher = options.launcher || new CodexLauncher(options.launcherOptions);
   const deepLinkOpener = options.deepLinkOpener || { open: openCodexDeepLink };
   const quotaReader = options.quotaReader || new CodexQuotaReader(options.quotaOptions);
+  const roundtable = options.roundtable || createRoundtableService({
+    db,
+    agentRunner: options.roundtableAgentRunner || createRoundtableAgentRunner(options.roundtableAgentOptions),
+  });
   const distDir = resolve(options.distDir || DEFAULT_DIST);
   const subscribers = new Set();
   let lastSignature = "";
@@ -404,6 +447,7 @@ export function createTaskServer(options = {}) {
   };
   const publishOnce = async () => {
     try {
+      reconcilePendingLaunches(monitor.list(), manual, metadata);
       const codexThreads = createSnapshot(monitor, metadata);
       await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
       const threads = [...manual.list(), ...applyThreadNames(codexThreads, threadNames)];
@@ -432,9 +476,25 @@ export function createTaskServer(options = {}) {
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      if (url.pathname === "/api/roundtable/events" && req.method === "GET") return roundtable.subscribe(req, res);
+      if (url.pathname === "/api/roundtable/topics" && req.method === "GET") return json(res, 200, { topics: roundtable.list() });
+      if (url.pathname === "/api/roundtable/topics" && req.method === "POST") return json(res, 201, { topic: roundtable.create(await parseBody(req)) });
+      const roundtableRetry = url.pathname.match(/^\/api\/roundtable\/topics\/([0-9a-f-]+)\/retry$/i);
+      if (roundtableRetry && req.method === "POST") return json(res, 202, { topic: roundtable.retry(roundtableRetry[1]) });
+      const roundtableCancel = url.pathname.match(/^\/api\/roundtable\/topics\/([0-9a-f-]+)\/cancel$/i);
+      if (roundtableCancel && req.method === "POST") return json(res, 200, { topic: roundtable.cancel(roundtableCancel[1]) });
+      const roundtableMessages = url.pathname.match(/^\/api\/roundtable\/topics\/([0-9a-f-]+)\/messages$/i);
+      if (roundtableMessages && req.method === "POST") return json(res, 202, { topic: roundtable.respond(roundtableMessages[1], await parseBody(req)) });
+      const roundtableTopic = url.pathname.match(/^\/api\/roundtable\/topics\/([0-9a-f-]+)$/i);
+      if (roundtableTopic && req.method === "GET") {
+        const detail = roundtable.get(roundtableTopic[1]);
+        if (!detail) throw new ApiError(404, "讨论议题不存在");
+        return json(res, 200, detail);
+      }
       if (url.pathname === "/api/health") return json(res, 200, { ok: true, source: "codex-local-state", tokenUsage: false });
       if (url.pathname === "/api/quota" && req.method === "GET") return json(res, 200, { quota: await quotaReader.read({ force: url.searchParams.get("refresh") === "1" }) });
       if (url.pathname === "/api/threads" && req.method === "GET") {
+        reconcilePendingLaunches(monitor.list(), manual, metadata);
         const codexThreads = createSnapshot(monitor, metadata, new Map(), { includeHidden: url.searchParams.get("hidden") === "1" });
         await refreshThreadNames({ threadIds: codexThreads.map((thread) => thread.id) });
         return json(res, 200, { threads: [...manual.list(), ...applyThreadNames(codexThreads, threadNames)] });
@@ -478,11 +538,17 @@ export function createTaskServer(options = {}) {
         if (!task.cwd) throw new ApiError(400, "请先填写工作目录");
         const cwd = resolve(task.cwd);
         if (!isAbsolute(task.cwd) || !existsSync(cwd) || !statSync(cwd).isDirectory()) throw new ApiError(400, "工作目录必须是存在的绝对路径");
-        const launched = await launcher.launch({ cwd, prompt: buildTaskPrompt(task) });
-        metadata.createFromManual(launched.threadId, task);
-        manual.patch(task.id, { codexThreadId: launched.threadId });
-        publishIfChanged();
-        return json(res, 200, launched);
+        const launchRequestedAt = new Date().toISOString();
+        const deepLink = buildNewThreadDeepLink({ ...task, cwd });
+        manual.patch(task.id, { launchRequestedAt });
+        try {
+          await deepLinkOpener.open(deepLink);
+        } catch (error) {
+          manual.patch(task.id, { launchRequestedAt: null });
+          throw error;
+        }
+        void publishIfChanged();
+        return json(res, 200, { deepLink, opened: true, pendingBinding: true });
       }
       const itemMatch = url.pathname.match(/^\/api\/items\/([0-9a-f-]+)$/i);
       if (itemMatch && req.method === "PATCH") return json(res, 200, { item: manual.patch(itemMatch[1], await parseBody(req)) });
@@ -512,12 +578,12 @@ export function createTaskServer(options = {}) {
       if (url.pathname.startsWith("/api/")) throw new ApiError(404, "API 不存在");
       if (!serveStatic(req, res, distDir, url.pathname)) throw new ApiError(404, "文件不存在");
     } catch (error) {
-      const status = error instanceof ApiError ? error.status : 500;
+      const status = error instanceof ApiError ? error.status : Number.isInteger(error?.status) ? error.status : 500;
       if (status === 500) console.error(error);
       if (!res.headersSent) json(res, status, { error: error instanceof ApiError ? error.message : "服务内部错误" });
     }
   });
-  server.on("close", () => { clearInterval(poller); for (const item of subscribers) item.end(); launcher.close?.(); db.close(); });
+  server.on("close", () => { clearInterval(poller); for (const item of subscribers) item.end(); roundtable.close?.(); launcher.close?.(); db.close(); });
   return server;
 }
 
